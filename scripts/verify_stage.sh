@@ -23,6 +23,13 @@
 
 set -uo pipefail
 
+# ---------- host endpoints ----------
+# Host ports are shifted from the conventional 8000/3000 because other dev
+# stacks on this machine occupy them. Override at the command line if needed:
+#   REVIEWMASTER_BACKEND_URL=http://localhost:9000 bash scripts/verify_stage.sh 0
+BACKEND_URL="${REVIEWMASTER_BACKEND_URL:-http://localhost:8088}"
+FRONTEND_URL="${REVIEWMASTER_FRONTEND_URL:-http://localhost:3300}"
+
 # ---------- color and logging helpers ----------
 
 RED=$'\033[0;31m'
@@ -126,7 +133,7 @@ check_docker_compose_up() {
 
 check_backend_health() {
   local response
-  response=$(curl -sf http://localhost:8000/health 2>&1)
+  response=$(curl -sf ${BACKEND_URL}/health 2>&1)
   if echo "$response" | grep -q '"status":"ok"'; then
     pass "backend /health responds ok"
   else
@@ -136,7 +143,7 @@ check_backend_health() {
 
 check_frontend_renders() {
   local code
-  code=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000 2>&1)
+  code=$(curl -sf -o /dev/null -w "%{http_code}" ${FRONTEND_URL} 2>&1)
   if [ "$code" = "200" ]; then
     pass "frontend serves a 200 at /"
   else
@@ -306,7 +313,7 @@ verify_stage_1() {
   local pwd="testpass1"
 
   local reg_response
-  reg_response=$(curl -sf -X POST http://localhost:8000/api/auth/register \
+  reg_response=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$pwd\"}" 2>&1)
   if echo "$reg_response" | grep -q "access_token"; then
@@ -316,7 +323,7 @@ verify_stage_1() {
   fi
 
   local login_response
-  login_response=$(curl -sf -X POST http://localhost:8000/api/auth/login \
+  login_response=$(curl -sf -X POST ${BACKEND_URL}/api/auth/login \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"$pwd\"}" 2>&1)
   if echo "$login_response" | grep -q "access_token"; then
@@ -328,7 +335,7 @@ verify_stage_1() {
   local token
   token=$(echo "$login_response" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
   local me_response
-  me_response=$(curl -sf -H "Authorization: Bearer $token" http://localhost:8000/api/auth/me 2>&1)
+  me_response=$(curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/auth/me 2>&1)
   if echo "$me_response" | grep -q "$email"; then
     pass "/me returns the right user with valid token"
   else
@@ -337,7 +344,7 @@ verify_stage_1() {
 
   local bad_response
   bad_response=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "Authorization: Bearer invalid.token.here" http://localhost:8000/api/auth/me)
+    -H "Authorization: Bearer invalid.token.here" ${BACKEND_URL}/api/auth/me)
   if [ "$bad_response" = "401" ]; then
     pass "/me rejects bad token with 401"
   else
@@ -391,7 +398,7 @@ verify_stage_3() {
   # Auth required — register + login to get token, then hit /settings
   local email="verify-$(date +%s)@test.local"
   local token
-  token=$(curl -sf -X POST http://localhost:8000/api/auth/register \
+  token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"testpass1\"}" 2>/dev/null \
     | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
@@ -402,10 +409,10 @@ verify_stage_3() {
   fi
 
   check_grep "GET /api/settings returns repeat_grain" "repeat_grain" \
-    curl -sf -H "Authorization: Bearer $token" http://localhost:8000/api/settings
+    curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/settings
 
   check_grep "GET /api/settings returns timezone" "timezone" \
-    curl -sf -H "Authorization: Bearer $token" http://localhost:8000/api/settings
+    curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/settings
 
   section "Frontend"
   if [ -f "frontend/app/(dashboard)/settings/page.tsx" ]; then
@@ -427,7 +434,7 @@ verify_stage_4() {
   section "Endpoints"
   local email="verify-$(date +%s)@test.local"
   local token
-  token=$(curl -sf -X POST http://localhost:8000/api/auth/register \
+  token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"testpass1\"}" 2>/dev/null \
     | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
@@ -439,10 +446,10 @@ verify_stage_4() {
 
   # New user has no orders — endpoints should still return valid shape
   check_grep "repeat-orders list returns items array" "items" \
-    curl -sf -H "Authorization: Bearer $token" "http://localhost:8000/api/repeat-orders?page=1&page_size=10"
+    curl -sf -H "Authorization: Bearer $token" "${BACKEND_URL}/api/repeat-orders?page=1&page_size=10"
 
   check_grep "repeat-orders summary returns KPI fields" "total_repeat_orders" \
-    curl -sf -H "Authorization: Bearer $token" http://localhost:8000/api/repeat-orders/summary
+    curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/repeat-orders/summary
 
   section "Frontend"
   if [ -f "frontend/app/(dashboard)/repeat-orders/page.tsx" ]; then
@@ -464,7 +471,7 @@ verify_stage_5() {
   section "Endpoints"
   local email="verify-$(date +%s)@test.local"
   local token
-  token=$(curl -sf -X POST http://localhost:8000/api/auth/register \
+  token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"testpass1\"}" 2>/dev/null \
     | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
@@ -476,12 +483,12 @@ verify_stage_5() {
 
   # Empty user — list endpoints should return valid shape
   check_grep "review-requests list endpoint responds" "items\|total" \
-    curl -sf -H "Authorization: Bearer $token" "http://localhost:8000/api/review-requests?page=1&page_size=10"
+    curl -sf -H "Authorization: Bearer $token" "${BACKEND_URL}/api/review-requests?page=1&page_size=10"
 
   # CSV export should set Content-Disposition
   local headers
   headers=$(curl -sf -I -H "Authorization: Bearer $token" \
-    http://localhost:8000/api/review-requests/export.csv 2>&1)
+    ${BACKEND_URL}/api/review-requests/export.csv 2>&1)
   if echo "$headers" | grep -qi "content-disposition.*attachment"; then
     pass "CSV export has Content-Disposition: attachment"
   else
@@ -543,7 +550,7 @@ verify_stage_6() {
   section "Endpoints exist"
   local email="verify-$(date +%s)@test.local"
   local token
-  token=$(curl -sf -X POST http://localhost:8000/api/auth/register \
+  token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\",\"password\":\"testpass1\"}" 2>/dev/null \
     | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
@@ -554,7 +561,7 @@ verify_stage_6() {
   fi
 
   check_grep "GET /api/sp-api/credentials returns configured field" "configured" \
-    curl -sf -H "Authorization: Bearer $token" http://localhost:8000/api/sp-api/credentials
+    curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/sp-api/credentials
 
   section "Worker for solicitations"
   if [ -f "backend/app/workers/solicitations.py" ]; then

@@ -1,0 +1,111 @@
+# Local dev stack. For production deployment see docker-compose.prod.yml
+# (added by Stage 7).
+#
+# Bring everything up:
+#   docker compose up -d --build
+#
+# Tail logs from one service:
+#   docker compose logs -f backend
+#
+# Run a one-off command inside a container:
+#   docker compose exec backend pytest -q
+#   docker compose exec backend alembic upgrade head
+#   docker compose exec postgres psql -U postgres -d app
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres  # pragma: allowlist secret
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Host port shifted from the standard 5432 — easyex-postgres owns 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      # Host port shifted from the standard 6379 — trynsell-redis owns 6380,
+      # so we go to 6381 to stay clear of both.
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/app}  # pragma: allowlist secret
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-change-me-please-32-bytes-minimum-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-60}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      ENCRYPTION_KEK: ${ENCRYPTION_KEK:-dev-only-kek-replace-in-production-please-32b}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3300}
+    volumes:
+      - ./backend:/app
+    ports:
+      # Host port shifted from the standard 8000 — easyex-django owns 8000
+      # and easymanage owns 8001.
+      - "8088:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8088}
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume so the container's node_modules isn't shadowed by the
+      # host bind mount (the host has none).
+      - /app/node_modules
+      - /app/.next
+    ports:
+      # Host port shifted from the standard 3000 — trynsell owns 3000–3010.
+      - "3300:3000"
+
+  worker:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/app}  # pragma: allowlist secret
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET: ${JWT_SECRET:-change-me-please-32-bytes-minimum-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-60}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      ENCRYPTION_KEK: ${ENCRYPTION_KEK:-dev-only-kek-replace-in-production-please-32b}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3300}
+    volumes:
+      - ./backend:/app
+    command: rq worker --url ${REDIS_URL:-redis://redis:6379/0} default
+
+volumes:
+  pgdata:
