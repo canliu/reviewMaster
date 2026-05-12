@@ -2,36 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Default shadcn/ui CSS variables (slate base). The full brand palette is
- * applied in the `stage_design` prompt. */
+/* Brand palette — see prompts/stage_design.md for the source-of-truth table.
+ * All values are HSL triplets (no `hsl()` wrapper) so Tailwind can apply
+ * opacity modifiers like `bg-primary/90`. */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Surfaces */
+    --background: 210 40% 98%;     /* slate-50 */
+    --foreground: 222 47% 11%;     /* slate-900 */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --popover-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    /* Borders / focus */
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 239 84% 67%;           /* indigo-500-ish for focus rings */
+
+    /* Primary — indigo */
+    --primary: 243 75% 59%;        /* #4F46E5 indigo-600 */
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 245 58% 51%;  /* #4338CA indigo-700 */
+    --primary-soft: 226 100% 96%;  /* #EEF2FF indigo-50 */
+
+    /* Status — emerald / amber / red / blue */
+    --success: 160 84% 39%;        /* #10B981 emerald-500 */
+    --success-foreground: 0 0% 100%;
+    --success-soft: 152 81% 96%;
+    --warning: 38 92% 50%;         /* #F59E0B amber-500 */
+    --warning-foreground: 26 83% 14%;
+    --warning-soft: 48 100% 96%;
+    --danger: 0 84% 60%;           /* #EF4444 red-500 */
+    --danger-foreground: 0 0% 100%;
+    --danger-soft: 0 86% 97%;
+    --info: 217 91% 60%;           /* #3B82F6 blue-500 */
+    --info-foreground: 0 0% 100%;
+    --info-soft: 214 100% 97%;
+
     --radius: 0.5rem;
   }
 
   * {
     @apply border-border;
   }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Make focus states visible everywhere (a11y baseline). */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 }
