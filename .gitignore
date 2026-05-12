@@ -44,7 +44,9 @@ redisdata/
 
 # ----- Project-specific -----
 /tmp/
-uploads/
+# Root-only: ignore a user-upload directory if one ends up at repo root,
+# but don't match `frontend/app/(dashboard)/uploads/` or similar route dirs.
+/uploads/
 
 # Root-only glob for spreadsheets: we ignore stray .xlsx files dropped at
 # the repo root (e.g. when developers test the upload feature with real
