@@ -1,9 +1,18 @@
 import type { Metadata } from "next";
+
+import { ConfirmProvider } from "@/components/feedback/ConfirmDialog";
+import { Toaster } from "@/components/feedback/Toaster";
+import { fontMono, fontSans } from "@/lib/fonts";
+import { cn } from "@/lib/utils";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ReviewMaster",
-  description: "Find Amazon repeat buyers and request reviews.",
+  title: {
+    default: "ReviewMaster",
+    template: "%s · ReviewMaster",
+  },
+  description: "Turn repeat buyers into 5-star reviews.",
 };
 
 export default function RootLayout({
@@ -12,8 +21,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="antialiased">{children}</body>
+    <html lang="en" className={cn(fontSans.variable, fontMono.variable)}>
+      <body className="font-sans antialiased">
+        <ConfirmProvider>
+          {children}
+          <Toaster />
+        </ConfirmProvider>
+      </body>
     </html>
   );
 }
