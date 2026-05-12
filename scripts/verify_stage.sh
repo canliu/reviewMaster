@@ -309,7 +309,7 @@ verify_stage_1() {
 
   section "Auth endpoints respond"
   # Register a throwaway user, verify the flow
-  local email="verify-$(date +%s)@test.local"
+  local email="verify-$(date +%s)@example.com"
   local pwd="testpass1"
 
   local reg_response
@@ -352,9 +352,12 @@ verify_stage_1() {
   fi
 
   section "Frontend pages exist"
+  # Dashboard home is at app/(dashboard)/dashboard/page.tsx (URL /dashboard);
+  # a sibling app/(dashboard)/page.tsx would collide with app/page.tsx since
+  # route groups don't appear in the URL. See stage-design handoff notes.
   for f in frontend/app/\(auth\)/login/page.tsx \
            frontend/app/\(auth\)/register/page.tsx \
-           frontend/app/\(dashboard\)/page.tsx; do
+           frontend/app/\(dashboard\)/dashboard/page.tsx; do
     if [ -f "$f" ]; then pass "exists: $f"; else fail "exists: $f"; fi
   done
 
@@ -396,7 +399,7 @@ verify_stage_3() {
 
   section "Endpoints"
   # Auth required — register + login to get token, then hit /settings
-  local email="verify-$(date +%s)@test.local"
+  local email="verify-$(date +%s)@example.com"
   local token
   token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
@@ -432,7 +435,7 @@ verify_stage_4() {
   check_alembic_up_to_date
 
   section "Endpoints"
-  local email="verify-$(date +%s)@test.local"
+  local email="verify-$(date +%s)@example.com"
   local token
   token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
@@ -469,7 +472,7 @@ verify_stage_5() {
   check_alembic_up_to_date
 
   section "Endpoints"
-  local email="verify-$(date +%s)@test.local"
+  local email="verify-$(date +%s)@example.com"
   local token
   token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
@@ -548,7 +551,7 @@ verify_stage_6() {
   check "crypto tests pass" docker compose exec -T backend pytest tests/test_crypto.py -q
 
   section "Endpoints exist"
-  local email="verify-$(date +%s)@test.local"
+  local email="verify-$(date +%s)@example.com"
   local token
   token=$(curl -sf -X POST ${BACKEND_URL}/api/auth/register \
     -H "Content-Type: application/json" \
