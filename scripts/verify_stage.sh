@@ -352,9 +352,12 @@ verify_stage_1() {
   fi
 
   section "Frontend pages exist"
+  # Dashboard home is at app/(dashboard)/dashboard/page.tsx (URL /dashboard);
+  # a sibling app/(dashboard)/page.tsx would collide with app/page.tsx since
+  # route groups don't appear in the URL. See stage-design handoff notes.
   for f in frontend/app/\(auth\)/login/page.tsx \
            frontend/app/\(auth\)/register/page.tsx \
-           frontend/app/\(dashboard\)/page.tsx; do
+           frontend/app/\(dashboard\)/dashboard/page.tsx; do
     if [ -f "$f" ]; then pass "exists: $f"; else fail "exists: $f"; fi
   done
 

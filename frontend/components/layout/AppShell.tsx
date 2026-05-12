@@ -2,10 +2,11 @@
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   ChevronDown,
   ListChecks,
+  LogOut,
   Menu,
   Repeat,
   Settings,
@@ -24,6 +25,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { logout } from "@/lib/auth";
+import { useCurrentUser } from "@/lib/use-current-user";
 import { cn } from "@/lib/utils";
 
 // URLs match the future stage routes inside the (dashboard) route group:
@@ -152,6 +155,15 @@ function ShopSwitcherStub() {
 }
 
 function UserMenuStub() {
+  const router = useRouter();
+  const { user } = useCurrentUser();
+  const initial = user?.email[0]?.toUpperCase() ?? "U";
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
+  };
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -162,14 +174,22 @@ function UserMenuStub() {
           className="rounded-full"
         >
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-soft text-xs font-semibold text-primary">
-            U
+            {initial}
           </span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Account</DropdownMenuLabel>
+        <DropdownMenuLabel className="font-normal">
+          <div className="text-xs text-muted-foreground">Signed in as</div>
+          <div className="truncate font-mono text-sm">
+            {user?.email ?? "—"}
+          </div>
+        </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>Sign out (Stage 1)</DropdownMenuItem>
+        <DropdownMenuItem onSelect={handleLogout} className="gap-2">
+          <LogOut className="h-4 w-4" aria-hidden="true" />
+          Sign out
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
