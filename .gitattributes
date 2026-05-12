@@ -1,0 +1,27 @@
+# Normalize line endings to LF on commit for all text files. Git will
+# auto-detect text vs binary; on checkout, working-tree files keep their
+# platform-native endings.
+* text=auto eol=lf
+
+# Explicit binary types — never try to diff or line-end-normalize these.
+*.xlsx  binary
+*.xls   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.zip   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+
+# Lockfiles: do NOT use a merge driver that auto-resolves them. Conflicts in
+# lockfiles almost always mean two branches added different dependency
+# versions — resolving blindly produces a broken dep tree. Resolve by hand:
+# pick one branch's lockfile and re-run the package manager.
+package-lock.json   -merge
+yarn.lock           -merge
+pnpm-lock.yaml      -merge
+poetry.lock         -merge
+uv.lock             -merge

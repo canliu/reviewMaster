@@ -1,0 +1,58 @@
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# ----- Node -----
+node_modules/
+.next/
+out/
+.turbo/
+coverage/
+npm-debug.log*
+yarn-error.log
+yarn-debug.log*
+pnpm-debug.log*
+
+# ----- Env / secrets -----
+# Real environment files must never be committed. .env.example IS tracked
+# (it documents required variables with placeholder values).
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ----- Editor / IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ----- Docker volumes / logs -----
+pgdata/
+redisdata/
+*.log
+
+# ----- Project-specific -----
+/tmp/
+uploads/
+
+# Root-only glob for spreadsheets: we ignore stray .xlsx files dropped at
+# the repo root (e.g. when developers test the upload feature with real
+# customer data), but we DO want test fixtures under
+# backend/tests/fixtures/*.xlsx and any curated sample files under
+# samples/*.xlsx to be tracked.
+/*.xlsx
+
+# ----- OS noise -----
+Thumbs.db
+Desktop.ini
