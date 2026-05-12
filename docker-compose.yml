@@ -60,6 +60,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3300}
     volumes:
       - ./backend:/app
+      # Shared with `worker` so file paths the backend writes are readable
+      # by the worker. Without this, each container has its own /tmp.
+      - uploads-tmp:/tmp/uploads
     ports:
       # Host port shifted from the standard 8000 — easyex-django owns 8000
       # and easymanage owns 8001.
@@ -105,7 +108,10 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3300}
     volumes:
       - ./backend:/app
+      # See backend service: shared so the worker reads files the API writes.
+      - uploads-tmp:/tmp/uploads
     command: rq worker --url ${REDIS_URL:-redis://redis:6379/0} default
 
 volumes:
   pgdata:
+  uploads-tmp:
