@@ -12,7 +12,6 @@ Steps mirror stage_2_upload.md exactly:
 """
 from __future__ import annotations
 
-import json
 import math
 import os
 import uuid
@@ -24,8 +23,11 @@ from typing import Any
 from uuid import UUID
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
+
+from app.models.order import Order
 
 from app.core.logger import get_logger
 from app.models.upload_batch import UploadBatch
@@ -154,7 +156,7 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
 
         if chunk_rows:
             with SyncSessionLocal() as session:
-                new_count, updated_count = _upsert_chunk(session, chunk_rows)
+                new_count, updated_count = _upsert_chunk(session, user_id, chunk_rows)
                 # `new_count + updated_count` is the count of rows that made
                 # it into the DB this chunk. A row whose order_id repeated
                 # within the batch only reaches the DB once (last write wins)
@@ -302,7 +304,10 @@ def _build_order_record(
             raw[col] = str(val)
         else:
             raw[col] = val
-    fields["raw_json"] = json.dumps(raw, ensure_ascii=False, default=str)
+    # SQLAlchemy JSONB serializes a dict; previous code passed a JSON string
+    # because we were going through text() with CAST. Now we use pg_insert(),
+    # so let the column adapter do the encoding.
+    fields["raw_json"] = raw
     return fields
 
 
@@ -323,70 +328,53 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return ts
 
 
-def _upsert_chunk(session: Session, rows: list[dict[str, Any]]) -> tuple[int, int]:
-    """Bulk upsert with conflict counting. Returns (new_count, updated_count)."""
+_UPDATE_ON_CONFLICT_COLS = (
+    "shop_site", "asin", "msku", "sku", "spu",
+    "product_name", "product_title", "parent_product_name", "order_type",
+    "buyer_email", "buyer_key",
+    "order_time_utc", "ship_time_utc", "estimated_delivery_utc",
+    "item_price", "currency", "quantity",
+    "ship_city", "ship_state", "ship_country",
+    "tracking_number", "carrier",
+    "raw_json",
+)
+
+
+def _upsert_chunk(
+    session: Session, user_id: UUID, rows: list[dict[str, Any]]
+) -> tuple[int, int]:
+    """Bulk upsert with conflict counting. Two round-trips per chunk:
+
+      1. SELECT to learn which order_ids already exist for this user.
+      2. One multi-row INSERT ... ON CONFLICT DO UPDATE.
+
+    Returns ``(new_count, updated_count)``. The earlier implementation did
+    one round-trip per row to capture ``RETURNING (xmax = 0)``, which
+    crawled on 30k-row uploads.
+    """
     if not rows:
         return 0, 0
 
-    sql = text(
-        """
-        INSERT INTO orders (
-            id, user_id, order_id, shop_site, asin, msku, sku, spu,
-            product_name, product_title, parent_product_name, order_type,
-            buyer_email, buyer_key, order_time_utc, ship_time_utc,
-            estimated_delivery_utc, item_price, currency, quantity,
-            ship_city, ship_state, ship_country, tracking_number, carrier,
-            raw_json
-        ) VALUES (
-            :id, :user_id, :order_id, :shop_site, :asin, :msku, :sku, :spu,
-            :product_name, :product_title, :parent_product_name, :order_type,
-            :buyer_email, :buyer_key, :order_time_utc, :ship_time_utc,
-            :estimated_delivery_utc, :item_price, :currency, :quantity,
-            :ship_city, :ship_state, :ship_country, :tracking_number, :carrier,
-            CAST(:raw_json AS JSONB)
-        )
-        ON CONFLICT (user_id, order_id) DO UPDATE SET
-            shop_site = EXCLUDED.shop_site,
-            asin = EXCLUDED.asin,
-            msku = EXCLUDED.msku,
-            sku = EXCLUDED.sku,
-            spu = EXCLUDED.spu,
-            product_name = EXCLUDED.product_name,
-            product_title = EXCLUDED.product_title,
-            parent_product_name = EXCLUDED.parent_product_name,
-            order_type = EXCLUDED.order_type,
-            buyer_email = EXCLUDED.buyer_email,
-            buyer_key = EXCLUDED.buyer_key,
-            order_time_utc = EXCLUDED.order_time_utc,
-            ship_time_utc = EXCLUDED.ship_time_utc,
-            estimated_delivery_utc = EXCLUDED.estimated_delivery_utc,
-            item_price = EXCLUDED.item_price,
-            currency = EXCLUDED.currency,
-            quantity = EXCLUDED.quantity,
-            ship_city = EXCLUDED.ship_city,
-            ship_state = EXCLUDED.ship_state,
-            ship_country = EXCLUDED.ship_country,
-            tracking_number = EXCLUDED.tracking_number,
-            carrier = EXCLUDED.carrier,
-            raw_json = EXCLUDED.raw_json,
-            updated_at = NOW()
-        RETURNING (xmax = 0) AS is_new
-        """
+    order_ids = [r["order_id"] for r in rows]
+    existing = set(
+        session.scalars(
+            select(Order.order_id)
+            .where(Order.user_id == user_id)
+            .where(Order.order_id.in_(order_ids))
+        ).all()
     )
-    new_count = 0
-    updated_count = 0
-    # executemany doesn't return RETURNING values aggregated, so execute
-    # row-by-row to capture is_new. Chunks are 500 rows max; the per-row
-    # round-trip dominates within a single transaction but still meets the
-    # 400 rows/s target on commodity Postgres.
-    for record in rows:
-        result = session.execute(sql, record).first()
-        if result is None:
-            continue
-        if bool(result.is_new):
-            new_count += 1
-        else:
-            updated_count += 1
+
+    stmt = pg_insert(Order).values(rows)
+    update_map = {col: stmt.excluded[col] for col in _UPDATE_ON_CONFLICT_COLS}
+    update_map["updated_at"] = text("NOW()")
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "order_id"],
+        set_=update_map,
+    )
+    session.execute(stmt)
+
+    new_count = sum(1 for r in rows if r["order_id"] not in existing)
+    updated_count = len(rows) - new_count
     return new_count, updated_count
 
 
