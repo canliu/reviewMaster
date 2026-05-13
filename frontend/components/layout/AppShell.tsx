@@ -4,7 +4,6 @@ import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  ChevronDown,
   ListChecks,
   LogOut,
   Menu,
@@ -24,9 +23,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { logout } from "@/lib/auth";
 import { useCurrentUser } from "@/lib/use-current-user";
+import { useSettings } from "@/lib/use-settings";
 import { cn } from "@/lib/utils";
 
 // URLs match the future stage routes inside the (dashboard) route group:
@@ -123,34 +130,48 @@ function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
       </Button>
 
       <div className="ml-auto flex items-center gap-2">
-        <ShopSwitcherStub />
+        <ShopSwitcher />
         <UserMenuStub />
       </div>
     </header>
   );
 }
 
-/* These two stubs render shape only — wiring lands in Stage 3 (shop) and
- * Stage 1 (user). They exist now so the shell looks complete on screenshot
- * and Stage 1/3 only have to swap state, not introduce new layout. */
+function ShopSwitcher() {
+  const { settings, mutate, isLoading } = useSettings();
 
-function ShopSwitcherStub() {
+  if (isLoading || !settings) {
+    return (
+      <span className="text-xs text-muted-foreground">Loading…</span>
+    );
+  }
+
+  if (settings.available_shop_sites.length === 0) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Upload an order file to start.
+      </span>
+    );
+  }
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
-          <span className="font-mono text-xs">No shop selected</span>
-          <ChevronDown className="h-3 w-3" aria-hidden="true" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Shop</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>
-          Upload orders to populate shops
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Select
+      value={settings.active_shop_site ?? undefined}
+      onValueChange={(value) => {
+        void mutate({ active_shop_site: value });
+      }}
+    >
+      <SelectTrigger className="h-9 w-44" aria-label="Active shop">
+        <SelectValue placeholder="Pick a shop" />
+      </SelectTrigger>
+      <SelectContent align="end">
+        {settings.available_shop_sites.map((shop) => (
+          <SelectItem key={shop} value={shop} className="font-mono text-xs">
+            {shop}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
