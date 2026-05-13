@@ -34,6 +34,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { logout } from "@/lib/auth";
 import { useCurrentUser } from "@/lib/use-current-user";
 import { useSettings } from "@/lib/use-settings";
+import { useShortcuts } from "@/lib/use-shortcuts";
 import { cn } from "@/lib/utils";
 
 // URLs match the future stage routes inside the (dashboard) route group:
@@ -69,7 +70,12 @@ export function AppShell({ children }: AppShellProps) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onMenuClick={() => setMobileOpen(true)} />
-        <main className="flex-1 px-4 py-6 md:px-8 md:py-8">{children}</main>
+        <main
+          id="main-content"
+          className="flex-1 px-4 py-6 md:px-8 md:py-8"
+        >
+          {children}
+        </main>
       </div>
     </div>
   );
@@ -112,6 +118,24 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           );
         })}
       </nav>
+      <SidebarFooter />
+    </div>
+  );
+}
+
+function SidebarFooter() {
+  const { setCheatsheetOpen } = useShortcuts();
+  return (
+    <div className="border-t border-border p-3 text-xs text-muted-foreground">
+      <button
+        type="button"
+        onClick={() => setCheatsheetOpen(true)}
+        className="flex items-center gap-1.5 hover:text-foreground"
+      >
+        <span aria-hidden="true">⌨</span>
+        Shortcuts
+        <span className="ml-1 rounded border border-border px-1 font-mono">?</span>
+      </button>
     </div>
   );
 }
