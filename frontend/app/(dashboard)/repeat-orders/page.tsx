@@ -69,6 +69,7 @@ import {
   createReviewRequests,
   downloadCsv,
 } from "@/lib/review-requests";
+import { getSpApiCredentials } from "@/lib/sp-api";
 import { useToast } from "@/lib/toast";
 import { useDebounce } from "@/lib/use-debounce";
 import { useSettings } from "@/lib/use-settings";
@@ -192,7 +193,22 @@ function RepeatOrdersPageInner() {
     queryFn: () => fetchList(apiFilters),
     enabled: Boolean(settings?.active_shop_site),
     placeholderData: (prev) => prev,
+    // Poll every 3s while any visible row has a pending request — off otherwise.
+    refetchInterval: (q) => {
+      const data = q.state.data as { items?: RepeatOrderItem[] } | undefined;
+      const hasPending = (data?.items ?? []).some(
+        (it: RepeatOrderItem) => it.review_request?.status === "pending",
+      );
+      return hasPending ? 3000 : false;
+    },
   });
+
+  // SP-API config — used to enable/disable the API-send action.
+  const spApiQuery = useQuery({
+    queryKey: ["sp-api-credentials"],
+    queryFn: getSpApiCredentials,
+  });
+  const spApiConfigured = spApiQuery.data?.configured ?? false;
 
   // Row selection — local state, reset on page change.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -286,6 +302,22 @@ function RepeatOrdersPageInner() {
       refresh();
     },
     onError: () => toast.error("Couldn't confirm", "Try again."),
+  });
+
+  const apiMutation = useMutation({
+    mutationFn: (orderUuids: string[]) =>
+      createReviewRequests({ order_uuids: orderUuids, method: "api" }),
+    onSuccess: (result) => {
+      reportResults(result);
+      refresh();
+      setSelected(new Set());
+    },
+    onError: (err) => {
+      const detail =
+        (err as AxiosError<{ detail?: string }>).response?.data?.detail ??
+        "Try again.";
+      toast.error("Couldn't send via API", detail);
+    },
   });
 
   const confirmAsManualMut = useMutation({
@@ -556,6 +588,7 @@ function RepeatOrdersPageInner() {
                   onOpenDetail={() => setDetailUuid(item.order_uuid)}
                   onManualMark={() => manualMutation.mutate([item.order_uuid])}
                   onOpenAmazon={() => linkMutation.mutate(item.order_uuid)}
+                  onApiSend={() => apiMutation.mutate([item.order_uuid])}
                   onReopenPending={() => {
                     const rr = item.review_request;
                     if (rr) {
@@ -572,8 +605,11 @@ function RepeatOrdersPageInner() {
                       });
                     }
                   }}
+                  spApiConfigured={spApiConfigured}
                   busy={
-                    manualMutation.isPending || linkMutation.isPending
+                    manualMutation.isPending ||
+                    linkMutation.isPending ||
+                    apiMutation.isPending
                   }
                 />
               ))
@@ -657,7 +693,9 @@ function Row({
   onOpenDetail,
   onManualMark,
   onOpenAmazon,
+  onApiSend,
   onReopenPending,
+  spApiConfigured,
   busy,
 }: {
   item: RepeatOrderItem;
@@ -666,7 +704,9 @@ function Row({
   onOpenDetail: () => void;
   onManualMark: () => void;
   onOpenAmazon: () => void;
+  onApiSend: () => void;
   onReopenPending: () => void;
+  spApiConfigured: boolean;
   busy: boolean;
 }) {
   const actionsDisabled = !item.can_request_review || busy;
@@ -765,8 +805,13 @@ function Row({
           />
           <ActionIcon
             icon={<Send className="h-4 w-4" />}
-            label="API send — coming in Stage 6"
-            disabled
+            label={
+              spApiConfigured
+                ? "Send via Amazon SP-API"
+                : "Configure SP-API in Settings to use this method"
+            }
+            disabled={actionsDisabled || !spApiConfigured}
+            onClick={onApiSend}
           />
         </TooltipProvider>
         {!item.can_request_review ? (

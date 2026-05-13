@@ -70,13 +70,26 @@ async def create_requests(
     """Bulk create review_requests. Validates per order; commits successes
     even when other orders fail validation."""
 
-    if method not in {"manual", "link"}:
-        raise APIError(422, "INVALID_METHOD", "method must be 'manual' or 'link'.")
+    if method not in {"manual", "link", "api"}:
+        raise APIError(
+            422, "INVALID_METHOD", "method must be 'manual', 'link', or 'api'."
+        )
 
     settings_row = await db.get(UserSettings, user.id)
     if settings_row is None or settings_row.active_shop_site is None:
         raise APIError(422, "NO_ACTIVE_SHOP", "Set an active shop first.")
     grain = settings_row.repeat_grain
+
+    # method="api" requires SP-API credentials.
+    if method == "api":
+        from app.models.seller_credential import SellerCredential
+        creds = await db.get(SellerCredential, user.id)
+        if creds is None:
+            raise APIError(
+                422,
+                "SP_API_NOT_CONFIGURED",
+                "Configure SP-API credentials in Settings before using the API method.",
+            )
 
     # Load all candidate orders once.
     orders = (
@@ -177,7 +190,11 @@ async def create_requests(
                 )
                 continue
 
-        status = "sent" if method == "manual" else "pending"
+        # status: manual → sent immediately; link/api → pending until confirmed/sent.
+        if method == "manual":
+            status = "sent"
+        else:
+            status = "pending"
         api_response = {"redirect_url": redirect_url} if redirect_url else None
         new_request = ReviewRequest(
             user_id=user.id,
@@ -188,6 +205,15 @@ async def create_requests(
         )
         db.add(new_request)
         await db.flush()
+
+        # Enqueue the SP-API worker for api-method requests.
+        if method == "api":
+            from app.core.queue import get_queue
+            get_queue().enqueue(
+                "app.workers.solicitations.send_solicitation",
+                str(new_request.id),
+                job_timeout=60 * 5,
+            )
         if note:
             db.add(
                 ReviewRequestNote(

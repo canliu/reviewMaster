@@ -255,6 +255,22 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* ---- SP-API link ---- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>SP-API connection</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Connect your Amazon Selling Partner API credentials to send
+              review requests automatically (method: api).
+            </p>
+            <Button variant="outline" asChild>
+              <a href="/settings/sp-api">Manage SP-API credentials →</a>
+            </Button>
+          </CardContent>
+        </Card>
+
         {/* ---- Replay onboarding tour ---- */}
         <div className="pt-2 text-sm text-muted-foreground">
           <button

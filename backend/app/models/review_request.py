@@ -45,6 +45,7 @@ class ReviewRequest(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     api_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
