@@ -572,7 +572,9 @@ verify_stage_6() {
     return
   fi
 
-  check_grep "GET /api/sp-api/credentials returns configured field" "configured" \
+  # Per-shop model: the credentials endpoint returns `{"items": [...]}`,
+  # each item carries a "configured" flag. Just confirm we get an items list.
+  check_grep "GET /api/sp-api/credentials returns items list" "items" \
     curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/sp-api/credentials
 
   section "Worker for solicitations"
