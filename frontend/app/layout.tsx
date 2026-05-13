@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { ConfirmProvider } from "@/components/feedback/ConfirmDialog";
 import { Toaster } from "@/components/feedback/Toaster";
+import { QueryProvider } from "@/components/providers/QueryProvider";
 import { fontMono, fontSans } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
 
@@ -23,10 +24,12 @@ export default function RootLayout({
   return (
     <html lang="en" className={cn(fontSans.variable, fontMono.variable)}>
       <body className="font-sans antialiased">
-        <ConfirmProvider>
-          {children}
-          <Toaster />
-        </ConfirmProvider>
+        <QueryProvider>
+          <ConfirmProvider>
+            {children}
+            <Toaster />
+          </ConfirmProvider>
+        </QueryProvider>
       </body>
     </html>
   );
