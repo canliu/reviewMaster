@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.repeat_orders import router as repeat_orders_router
+from app.api.settings import router as settings_router
 from app.api.uploads import router as uploads_router
 from app.core.config import settings
 from app.core.db import SessionLocal
@@ -48,6 +50,8 @@ register_exception_handlers(app)
 
 app.include_router(auth_router)
 app.include_router(uploads_router)
+app.include_router(settings_router)
+app.include_router(repeat_orders_router)
 
 
 @app.get("/health", tags=["meta"])
