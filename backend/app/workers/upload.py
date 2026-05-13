@@ -132,6 +132,11 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
         chunk_rows: list[dict[str, Any]] = []
         chunk_affected: list[tuple[str, str, str | None, str | None, str | None]] = []
 
+        # Dedup map per chunk: keeping the LAST occurrence of each order_id
+        # satisfies the prompt's "second occurrence overwrites" rule AND lets
+        # the bulk INSERT ... ON CONFLICT statement succeed (Postgres refuses
+        # to UPDATE the same row twice within a single ON CONFLICT statement).
+        chunk_by_order: dict[str, dict[str, Any]] = {}
         for _idx, row in chunk.iterrows():
             built = _build_order_record(row, user_id, present_map, raw_columns)
             if isinstance(built, str):  # error reason
@@ -142,17 +147,19 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
             if order_id in seen_in_batch:
                 counters["duplicate_rows"] += 1
             seen_in_batch.add(order_id)
+            chunk_by_order[order_id] = built  # later overwrites earlier
 
-            chunk_rows.append(built)
-            chunk_affected.append(
-                (
-                    built["shop_site"],
-                    built["buyer_key"],
-                    built.get("asin"),
-                    built.get("spu"),
-                    built.get("product_name"),
-                )
+        chunk_rows = list(chunk_by_order.values())
+        chunk_affected = [
+            (
+                rec["shop_site"],
+                rec["buyer_key"],
+                rec.get("asin"),
+                rec.get("spu"),
+                rec.get("product_name"),
             )
+            for rec in chunk_rows
+        ]
 
         if chunk_rows:
             with SyncSessionLocal() as session:
