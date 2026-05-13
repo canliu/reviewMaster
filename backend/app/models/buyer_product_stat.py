@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Index, Integer, Numeric, String, func
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,9 +34,9 @@ class BuyerProductStat(Base):
     group_value: Mapped[str] = mapped_column(String, primary_key=True)
 
     order_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    first_order_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_order_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    first_order_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_order_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     total_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

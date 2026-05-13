@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -56,9 +56,9 @@ class Order(Base):
     buyer_email: Mapped[str | None] = mapped_column(String, nullable=True)
     buyer_key: Mapped[str] = mapped_column(String, nullable=False)
 
-    order_time_utc: Mapped[datetime | None] = mapped_column(nullable=True)
-    ship_time_utc: Mapped[datetime | None] = mapped_column(nullable=True)
-    estimated_delivery_utc: Mapped[datetime | None] = mapped_column(nullable=True)
+    order_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ship_time_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    estimated_delivery_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     item_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     currency: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -74,8 +74,8 @@ class Order(Base):
     raw_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
