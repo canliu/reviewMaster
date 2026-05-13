@@ -1,6 +1,7 @@
 import { api } from "@/lib/api";
 
 export interface SpApiCredentialsMetadata {
+  shop_site: string;
   configured: boolean;
   lwa_client_id_prefix: string | null;
   selling_partner_id: string | null;
@@ -9,9 +10,16 @@ export interface SpApiCredentialsMetadata {
   updated_at: string | null;
 }
 
+export interface SpApiCredentialsList {
+  items: SpApiCredentialsMetadata[];
+}
+
 export interface SpApiCredentialsIn {
+  shop_site: string;
   lwa_client_id: string;
+  /** Empty string = "keep existing ciphertext" on update. Required on first save. */
   lwa_client_secret: string;
+  /** Empty string = "keep existing ciphertext" on update. Required on first save. */
   refresh_token: string;
   selling_partner_id: string;
   marketplace_id: string;
@@ -21,7 +29,7 @@ export type TestConnectionResult =
   | { ok: true; marketplaces: string[]; elapsed_ms: number }
   | { ok: false; error_code: string; message: string };
 
-// Same list as the backend's MARKETPLACES dict — kept in sync by hand.
+// Mirrors the backend's MARKETPLACES dict — kept in sync by hand.
 export const SP_API_MARKETPLACES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "ATVPDKIKX0DER", label: "Amazon.com (US)" },
   { id: "A2EUQ1WTGCTBG2", label: "Amazon.ca (CA)" },
@@ -45,10 +53,8 @@ export const SP_API_MARKETPLACES: ReadonlyArray<{ id: string; label: string }> =
   { id: "A21TJRUUN4KGV", label: "Amazon.in (IN)" },
 ];
 
-export async function getSpApiCredentials(): Promise<SpApiCredentialsMetadata> {
-  const { data } = await api.get<SpApiCredentialsMetadata>(
-    "/api/sp-api/credentials",
-  );
+export async function listSpApiCredentials(): Promise<SpApiCredentialsList> {
+  const { data } = await api.get<SpApiCredentialsList>("/api/sp-api/credentials");
   return data;
 }
 
@@ -62,13 +68,15 @@ export async function saveSpApiCredentials(
   return data;
 }
 
-export async function deleteSpApiCredentials(): Promise<void> {
-  await api.delete("/api/sp-api/credentials");
+export async function deleteSpApiCredentials(shopSite: string): Promise<void> {
+  await api.delete(`/api/sp-api/credentials/${encodeURIComponent(shopSite)}`);
 }
 
-export async function testSpApiConnection(): Promise<TestConnectionResult> {
+export async function testSpApiConnection(
+  shopSite: string,
+): Promise<TestConnectionResult> {
   const { data } = await api.post<TestConnectionResult>(
-    "/api/sp-api/test-connection",
+    `/api/sp-api/credentials/${encodeURIComponent(shopSite)}/test-connection`,
   );
   return data;
 }

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class CredentialsIn(BaseModel):
+    shop_site: str = Field(min_length=1)
     lwa_client_id: str = Field(min_length=1)
     # Secrets are optional on UPDATE — if the row exists and the client
     # leaves them blank, the existing ciphertext is preserved. The service
@@ -18,12 +19,17 @@ class CredentialsIn(BaseModel):
 
 
 class CredentialsMetadataOut(BaseModel):
+    shop_site: str
     configured: bool
     lwa_client_id_prefix: str | None = None
     selling_partner_id: str | None = None
     marketplace_id: str | None = None
     marketplace_label: str | None = None
     updated_at: datetime | None = None
+
+
+class CredentialsListOut(BaseModel):
+    items: list[CredentialsMetadataOut]
 
 
 class TestConnectionOk(BaseModel):

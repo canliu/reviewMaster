@@ -49,6 +49,7 @@ async def _setup_user_order_and_creds(
         "/api/sp-api/credentials",
         headers=headers,
         json={
+            "shop_site": "p3:US",
             "lwa_client_id": "amzn1.application-oa2-client.fake",
             "lwa_client_secret": "fake-secret",  # pragma: allowlist secret
             "refresh_token": "Atzr|FAKE",

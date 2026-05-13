@@ -77,27 +77,23 @@ def send_solicitation(review_request_id: str) -> None:
             _mark_failed(session, rr, code="UNKNOWN", message="Order missing.")
             return
 
-        cred_row = session.execute(
-            select(__import__("app.models.seller_credential", fromlist=["SellerCredential"]).SellerCredential)
-            .where(
-                __import__("app.models.seller_credential", fromlist=["SellerCredential"]).SellerCredential.user_id
-                == rr.user_id
-            )
-        ).scalar_one_or_none()
+        from app.models.seller_credential import SellerCredential
+
+        # Per-shop creds — look up by (user, order.shop_site).
+        cred_row = session.get(SellerCredential, (rr.user_id, order.shop_site))
         if cred_row is None:
             _mark_failed(
                 session,
                 rr,
                 code="SP_API_NOT_CONFIGURED",
-                message="SP-API credentials missing.",
+                message=(
+                    f"No SP-API credentials configured for shop '{order.shop_site}'."
+                ),
             )
             return
 
         creds = sp_api_credentials.decrypt_credentials(cred_row)
-        order_marketplace = (
-            sp_api_credentials.marketplace_id_for_shop_site(order.shop_site)
-            or cred_row.marketplace_id
-        )
+        order_marketplace = cred_row.marketplace_id
 
     # Rate-limit (block up to 60s).
     if not solicitations_bucket().acquire(timeout=60.0):

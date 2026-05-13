@@ -80,15 +80,26 @@ async def create_requests(
         raise APIError(422, "NO_ACTIVE_SHOP", "Set an active shop first.")
     grain = settings_row.repeat_grain
 
-    # method="api" requires SP-API credentials.
+    # method="api" requires SP-API credentials per shop. The per-order
+    # validation below surfaces missing-creds as a per-order `errors` entry
+    # so a mixed batch where some shops are configured doesn't fail wholesale.
+    configured_shops: set[str] = set()
     if method == "api":
         from app.models.seller_credential import SellerCredential
-        creds = await db.get(SellerCredential, user.id)
-        if creds is None:
+
+        rows = (
+            await db.execute(
+                select(SellerCredential.shop_site)
+                .where(SellerCredential.user_id == user.id)
+            )
+        ).all()
+        configured_shops = {r[0] for r in rows}
+        if not configured_shops:
             raise APIError(
                 422,
                 "SP_API_NOT_CONFIGURED",
-                "Configure SP-API credentials in Settings before using the API method.",
+                "Configure SP-API credentials in Settings for at least one shop "
+                "before using the API method.",
             )
 
     # Load all candidate orders once.
@@ -130,6 +141,17 @@ async def create_requests(
                     "order_uuid": order.id,
                     "code": "NOT_A_REPEAT_ORDER",
                     "reason": "not a repeat under the current grain/shop.",
+                }
+            )
+            continue
+
+        # 2b. for method=api: the order's shop must have its own creds.
+        if method == "api" and order.shop_site not in configured_shops:
+            errors.append(
+                {
+                    "order_uuid": order.id,
+                    "code": "SP_API_NOT_CONFIGURED",
+                    "reason": f"No SP-API credentials saved for shop '{order.shop_site}'.",
                 }
             )
             continue

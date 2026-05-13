@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select  # noqa: F401  # used in list_credentials_for_user
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -89,37 +89,60 @@ def marketplace_id_for_shop_site(shop_site: str) -> str | None:
 async def save_credentials(
     db: AsyncSession,
     user_id: UUID,
+    shop_site: str,
     *,
     lwa_client_id: str,
-    lwa_client_secret: str,
-    refresh_token: str,
+    lwa_client_secret: str | None,
+    refresh_token: str | None,
     selling_partner_id: str,
     marketplace_id: str,
 ) -> SellerCredential:
+    """Save or update credentials for one (user, shop_site).
+
+    Secrets are optional on UPDATE: if empty, the existing ciphertext is
+    preserved so the user can adjust non-secret fields without re-pasting.
+    On INSERT both secrets are required.
+    """
     validate_marketplace_id(marketplace_id)
+    if not shop_site or not shop_site.strip():
+        raise APIError(422, "INVALID_SHOP_SITE", "shop_site is required.")
+    shop_site = shop_site.strip()
 
-    dek = crypto.generate_dek()
-    wrapped_dek = crypto.wrap_dek(dek, settings.encryption_kek)
-    enc_refresh = crypto.encrypt(refresh_token, dek)
-    enc_client_secret = crypto.encrypt(lwa_client_secret, dek)
+    existing = await db.get(SellerCredential, (user_id, shop_site))
 
-    existing = await db.get(SellerCredential, user_id)
     if existing is None:
+        if not lwa_client_secret or not refresh_token:
+            raise APIError(
+                422,
+                "SECRETS_REQUIRED",
+                "Both lwa_client_secret and refresh_token are required on first save.",
+            )
+        dek = crypto.generate_dek()
         row = SellerCredential(
             user_id=user_id,
-            dek_encrypted=wrapped_dek,
-            refresh_token_ciphertext=enc_refresh,
+            shop_site=shop_site,
+            dek_encrypted=crypto.wrap_dek(dek, settings.encryption_kek),
+            refresh_token_ciphertext=crypto.encrypt(refresh_token, dek),
             lwa_client_id=lwa_client_id,
-            lwa_client_secret_ciphertext=enc_client_secret,
+            lwa_client_secret_ciphertext=crypto.encrypt(lwa_client_secret, dek),
             selling_partner_id=selling_partner_id,
             marketplace_id=marketplace_id,
         )
         db.add(row)
     else:
-        existing.dek_encrypted = wrapped_dek
-        existing.refresh_token_ciphertext = enc_refresh
+        if lwa_client_secret or refresh_token:
+            new_dek = crypto.generate_dek()
+            old_dek = crypto.unwrap_dek(existing.dek_encrypted, settings.encryption_kek)
+            old_secret = crypto.decrypt(existing.lwa_client_secret_ciphertext, old_dek)
+            old_refresh = crypto.decrypt(existing.refresh_token_ciphertext, old_dek)
+            existing.dek_encrypted = crypto.wrap_dek(new_dek, settings.encryption_kek)
+            existing.lwa_client_secret_ciphertext = crypto.encrypt(
+                lwa_client_secret or old_secret, new_dek
+            )
+            existing.refresh_token_ciphertext = crypto.encrypt(
+                refresh_token or old_refresh, new_dek
+            )
         existing.lwa_client_id = lwa_client_id
-        existing.lwa_client_secret_ciphertext = enc_client_secret
         existing.selling_partner_id = selling_partner_id
         existing.marketplace_id = marketplace_id
         existing.updated_at = datetime.now(timezone.utc)
@@ -129,14 +152,29 @@ async def save_credentials(
     return row
 
 
-async def load_credentials(
-    db: AsyncSession, user_id: UUID
+async def load_credentials_for_shop(
+    db: AsyncSession, user_id: UUID, shop_site: str
 ) -> SellerCredential | None:
-    return await db.get(SellerCredential, user_id)
+    return await db.get(SellerCredential, (user_id, shop_site))
 
 
-async def delete_credentials(db: AsyncSession, user_id: UUID) -> bool:
-    row = await db.get(SellerCredential, user_id)
+async def list_credentials_for_user(
+    db: AsyncSession, user_id: UUID
+) -> list[SellerCredential]:
+    rows = (
+        await db.execute(
+            select(SellerCredential)
+            .where(SellerCredential.user_id == user_id)
+            .order_by(SellerCredential.shop_site)
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def delete_credentials(
+    db: AsyncSession, user_id: UUID, shop_site: str
+) -> bool:
+    row = await db.get(SellerCredential, (user_id, shop_site))
     if row is None:
         return False
     await db.delete(row)
@@ -159,6 +197,7 @@ def decrypt_credentials(row: SellerCredential) -> dict[str, str]:
 def metadata(row: SellerCredential) -> dict:
     """Safe-to-return metadata: never includes the secrets themselves."""
     return {
+        "shop_site": row.shop_site,
         "configured": True,
         "lwa_client_id_prefix": row.lwa_client_id[:32],
         "selling_partner_id": row.selling_partner_id,

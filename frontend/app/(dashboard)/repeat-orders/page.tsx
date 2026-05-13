@@ -69,7 +69,7 @@ import {
   createReviewRequests,
   downloadCsv,
 } from "@/lib/review-requests";
-import { getSpApiCredentials } from "@/lib/sp-api";
+import { listSpApiCredentials } from "@/lib/sp-api";
 import { useToast } from "@/lib/toast";
 import { useDebounce } from "@/lib/use-debounce";
 import { useSettings } from "@/lib/use-settings";
@@ -203,12 +203,14 @@ function RepeatOrdersPageInner() {
     },
   });
 
-  // SP-API config — used to enable/disable the API-send action.
+  // SP-API config — used to enable/disable the API-send action per row.
   const spApiQuery = useQuery({
     queryKey: ["sp-api-credentials"],
-    queryFn: getSpApiCredentials,
+    queryFn: listSpApiCredentials,
   });
-  const spApiConfigured = spApiQuery.data?.configured ?? false;
+  const configuredSpApiShops = new Set(
+    (spApiQuery.data?.items ?? []).map((c) => c.shop_site),
+  );
 
   // Row selection — local state, reset on page change.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -605,7 +607,7 @@ function RepeatOrdersPageInner() {
                       });
                     }
                   }}
-                  spApiConfigured={spApiConfigured}
+                  spApiConfigured={configuredSpApiShops.has(item.shop_site)}
                   busy={
                     manualMutation.isPending ||
                     linkMutation.isPending ||
