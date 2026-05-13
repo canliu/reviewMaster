@@ -6,7 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.orders import router as orders_router
 from app.api.repeat_orders import router as repeat_orders_router
+from app.api.review_requests import router as review_requests_router
 from app.api.settings import router as settings_router
 from app.api.uploads import router as uploads_router
 from app.core.config import settings
@@ -52,6 +54,8 @@ app.include_router(auth_router)
 app.include_router(uploads_router)
 app.include_router(settings_router)
 app.include_router(repeat_orders_router)
+app.include_router(review_requests_router)
+app.include_router(orders_router)
 
 
 @app.get("/health", tags=["meta"])

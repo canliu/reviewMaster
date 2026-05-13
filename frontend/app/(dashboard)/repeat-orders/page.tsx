@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { AxiosError } from "axios";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckSquare,
+  Download,
   ExternalLink,
   ListChecks,
   Repeat,
@@ -14,6 +16,7 @@ import {
   Users,
 } from "lucide-react";
 
+import { LinkConfirmDialog } from "@/components/feedback/LinkConfirmDialog";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatCard } from "@/components/data/StatCard";
@@ -59,6 +62,14 @@ import {
   fetchList,
   fetchSummary,
 } from "@/lib/repeat-orders";
+import {
+  CreateResult,
+  confirmAsManual,
+  confirmRequest,
+  createReviewRequests,
+  downloadCsv,
+} from "@/lib/review-requests";
+import { useToast } from "@/lib/toast";
 import { useDebounce } from "@/lib/use-debounce";
 import { useSettings } from "@/lib/use-settings";
 import { cn } from "@/lib/utils";
@@ -106,7 +117,7 @@ function parseFilters(params: URLSearchParams): UrlFilters {
   };
 }
 
-export default function RepeatOrdersPage() {
+function RepeatOrdersPageInner() {
   const router = useRouter();
   const search = useSearchParams();
   const { settings } = useSettings();
@@ -190,6 +201,114 @@ export default function RepeatOrdersPage() {
   }, [urlFilters.page, settings?.active_shop_site]);
 
   const [detailUuid, setDetailUuid] = useState<string | null>(null);
+  const [linkModal, setLinkModal] = useState<{
+    requestId: string;
+    orderUuid: string;
+    redirectUrl: string | null;
+  } | null>(null);
+
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["repeat-orders"] });
+    void queryClient.invalidateQueries({
+      queryKey: ["repeat-orders-summary"],
+    });
+  };
+
+  function reportResults(result: CreateResult) {
+    const { created, skipped, errors } = result;
+    if (created.length > 0) {
+      toast.success(
+        `Created ${created.length} review request${created.length === 1 ? "" : "s"}`,
+        skipped.length || errors.length
+          ? `Skipped ${skipped.length}, errors ${errors.length}.`
+          : undefined,
+      );
+    } else if (skipped.length > 0 && errors.length === 0) {
+      toast.info(
+        "Already requested",
+        `${skipped.length} order${skipped.length === 1 ? " was" : "s were"} skipped.`,
+      );
+    } else if (errors.length > 0) {
+      toast.error(
+        "Couldn't request review",
+        errors.map((e) => e.reason).join("; "),
+      );
+    }
+  }
+
+  const manualMutation = useMutation({
+    mutationFn: (orderUuids: string[]) =>
+      createReviewRequests({ order_uuids: orderUuids, method: "manual" }),
+    onSuccess: (result) => {
+      reportResults(result);
+      refresh();
+      setSelected(new Set());
+    },
+    onError: () => {
+      toast.error("Couldn't mark", "Try again.");
+    },
+  });
+
+  const linkMutation = useMutation({
+    mutationFn: (orderUuid: string) =>
+      createReviewRequests({ order_uuids: [orderUuid], method: "link" }),
+    onSuccess: (result, orderUuid) => {
+      const created = result.created[0];
+      if (created) {
+        if (created.redirect_url) {
+          window.open(created.redirect_url, "_blank", "noopener,noreferrer");
+        }
+        setLinkModal({
+          requestId: created.id,
+          orderUuid,
+          redirectUrl: created.redirect_url,
+        });
+      }
+      reportResults(result);
+      refresh();
+    },
+    onError: (err) => {
+      const detail =
+        (err as AxiosError<{ detail?: string }>).response?.data?.detail ??
+        "Try again.";
+      toast.error("Couldn't open Amazon", detail);
+    },
+  });
+
+  const confirmLink = useMutation({
+    mutationFn: confirmRequest,
+    onSuccess: () => {
+      toast.success("Marked as requested");
+      setLinkModal(null);
+      refresh();
+    },
+    onError: () => toast.error("Couldn't confirm", "Try again."),
+  });
+
+  const confirmAsManualMut = useMutation({
+    mutationFn: confirmAsManual,
+    onSuccess: () => {
+      toast.success("Marked as manual");
+      setLinkModal(null);
+      refresh();
+    },
+    onError: () => toast.error("Couldn't confirm", "Try again."),
+  });
+
+  async function handleExport() {
+    try {
+      await downloadCsv(
+        "repeat-orders",
+        apiFilters as Record<string, string | number | boolean | undefined>,
+        `repeat-orders-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+    } catch {
+      toast.error("Export failed", "Try again.");
+    }
+  }
 
   // ---- empty / loading shells ----
   if (settings && !settings.active_shop_site) {
@@ -338,17 +457,36 @@ export default function RepeatOrdersPage() {
         </div>
       </div>
 
-      {/* ---- Batch action bar (Stage 5 wires the action) ---- */}
-      {selected.size > 0 ? (
-        <div className="mb-3 flex items-center justify-between rounded-md border border-primary/30 bg-primary-soft px-3 py-2 text-sm">
-          <span>
-            <span className="font-semibold">{selected.size}</span> selected
-          </span>
-          <Button size="sm" disabled>
-            Mark as requested (Stage 5)
-          </Button>
+      {/* ---- Action bar ---- */}
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex-1">
+          {selected.size > 0 ? (
+            <div className="flex items-center justify-between rounded-md border border-primary/30 bg-primary-soft px-3 py-2 text-sm">
+              <span>
+                <span className="font-semibold">{selected.size}</span> selected
+              </span>
+              <Button
+                size="sm"
+                disabled={manualMutation.isPending}
+                onClick={() =>
+                  manualMutation.mutate(Array.from(selected))
+                }
+              >
+                Mark selected as requested (manual)
+              </Button>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          className="gap-2"
+        >
+          <Download className="h-4 w-4" aria-hidden="true" />
+          Export CSV
+        </Button>
+      </div>
 
       {/* ---- Table ---- */}
       <div className="rounded-lg border border-border bg-card">
@@ -416,6 +554,27 @@ export default function RepeatOrdersPage() {
                     })
                   }
                   onOpenDetail={() => setDetailUuid(item.order_uuid)}
+                  onManualMark={() => manualMutation.mutate([item.order_uuid])}
+                  onOpenAmazon={() => linkMutation.mutate(item.order_uuid)}
+                  onReopenPending={() => {
+                    const rr = item.review_request;
+                    if (rr) {
+                      const url =
+                        (item.review_request &&
+                          (item.review_request as unknown as {
+                            api_response?: { redirect_url?: string };
+                          }).api_response?.redirect_url) ??
+                        null;
+                      setLinkModal({
+                        requestId: rr.id,
+                        orderUuid: item.order_uuid,
+                        redirectUrl: url,
+                      });
+                    }
+                  }}
+                  busy={
+                    manualMutation.isPending || linkMutation.isPending
+                  }
                 />
               ))
             )}
@@ -454,6 +613,19 @@ export default function RepeatOrdersPage() {
         onClose={() => setDetailUuid(null)}
         timezone={settings?.timezone}
       />
+
+      {/* ---- Confirm-after-Amazon dialog ---- */}
+      <LinkConfirmDialog
+        open={linkModal !== null}
+        redirectUrl={linkModal?.redirectUrl ?? null}
+        onCancel={() => setLinkModal(null)}
+        onConfirmClicked={() =>
+          linkModal && confirmLink.mutate(linkModal.requestId)
+        }
+        onConfirmAsManual={() =>
+          linkModal && confirmAsManualMut.mutate(linkModal.requestId)
+        }
+      />
     </>
   );
 }
@@ -483,16 +655,31 @@ function Row({
   selected,
   onToggle,
   onOpenDetail,
+  onManualMark,
+  onOpenAmazon,
+  onReopenPending,
+  busy,
 }: {
   item: RepeatOrderItem;
   selected: boolean;
   onToggle: (checked: boolean) => void;
   onOpenDetail: () => void;
+  onManualMark: () => void;
+  onOpenAmazon: () => void;
+  onReopenPending: () => void;
+  busy: boolean;
 }) {
-  const disabled = !item.can_request_review;
+  const actionsDisabled = !item.can_request_review || busy;
+  const isPendingLink =
+    item.review_request?.status === "pending" &&
+    item.review_request?.method === "link";
+
   return (
     <TableRow
-      className={cn("cursor-pointer", disabled && "opacity-60")}
+      className={cn(
+        "cursor-pointer",
+        !item.can_request_review && "opacity-60",
+      )}
       onClick={onOpenDetail}
     >
       <TableCell
@@ -538,11 +725,26 @@ function Row({
       <TableCell className="text-xs">
         {formatDateTime(item.estimated_delivery_utc)}
       </TableCell>
-      <TableCell>
-        <StatusBadge
-          status={item.review_request?.status ?? null}
-          method={item.review_request?.method ?? null}
-        />
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        {isPendingLink ? (
+          <button
+            type="button"
+            onClick={onReopenPending}
+            className="cursor-pointer rounded focus-visible:outline-none"
+            aria-label="Reopen pending link request"
+            title="Reopen the Seller Central tab to finish this request"
+          >
+            <StatusBadge
+              status={item.review_request?.status ?? null}
+              method={item.review_request?.method ?? null}
+            />
+          </button>
+        ) : (
+          <StatusBadge
+            status={item.review_request?.status ?? null}
+            method={item.review_request?.method ?? null}
+          />
+        )}
       </TableCell>
       <TableCell
         className="text-right"
@@ -551,13 +753,15 @@ function Row({
         <TooltipProvider delayDuration={200}>
           <ActionIcon
             icon={<CheckSquare className="h-4 w-4" />}
-            label="Manual mark — wired in Stage 5"
-            disabled
+            label="Mark as requested (manual)"
+            disabled={actionsDisabled}
+            onClick={onManualMark}
           />
           <ActionIcon
             icon={<ExternalLink className="h-4 w-4" />}
-            label="Open in Seller Central — wired in Stage 5"
-            disabled
+            label="Open in Seller Central (link)"
+            disabled={actionsDisabled}
+            onClick={onOpenAmazon}
           />
           <ActionIcon
             icon={<Send className="h-4 w-4" />}
@@ -565,7 +769,7 @@ function Row({
             disabled
           />
         </TooltipProvider>
-        {disabled ? (
+        {!item.can_request_review ? (
           <div className="mt-1 text-[10px] text-muted-foreground">
             {item.can_request_reason}
           </div>
@@ -770,3 +974,11 @@ function Field({
 // Suppress unused-import warning for the icon variant; ESLint flags it
 // since this file's table doesn't render bare Square (the checkbox does).
 void Square;
+
+export default function RepeatOrdersPage() {
+  return (
+    <Suspense fallback={<PageHeader title="" />}>
+      <RepeatOrdersPageInner />
+    </Suspense>
+  );
+}

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import csv
+import io
+from datetime import date
+from typing import AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,6 +125,93 @@ async def list_endpoint(
                 sort=sort,
             )
         )
+    )
+
+
+# CSV export — must come before the /{order_uuid} catch-all so FastAPI matches it first.
+@router.get("/export.csv")
+async def export_csv(
+    asin: str | None = Query(None),
+    product_search: str | None = Query(None, min_length=1),
+    has_review_request: bool | None = Query(None),
+    in_window: bool | None = Query(None),
+    min_purchases: int = Query(svc.DEFAULT_MIN_PURCHASES, ge=1),
+    sort: str = Query("last_order_desc"),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    # Fresh session inside the generator — FastAPI closes request-scoped
+    # sessions as soon as we return the StreamingResponse, but the generator
+    # keeps emitting rows after.
+    columns = [
+        "order_id", "shop_site", "asin", "product_name", "buyer_email", "buyer_key",
+        "ship_city", "ship_state", "ship_country",
+        "order_time_utc", "estimated_delivery_utc",
+        "item_price", "currency", "quantity",
+        "purchase_index", "total_purchases",
+        "request_method", "request_status",
+        "can_request_review", "can_request_reason",
+    ]
+    user_id = user.id
+
+    async def _rows() -> AsyncIterator[bytes]:
+        from app.core.db import SessionLocal
+        from app.models.user import User as UserModel
+
+        async with SessionLocal() as session:
+            current_user = (
+                await session.execute(
+                    select(UserModel).where(UserModel.id == user_id)
+                )
+            ).scalar_one()
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(columns)
+            yield buf.getvalue().encode("utf-8")
+            buf.seek(0)
+            buf.truncate(0)
+
+            page = 1
+            page_size = 200
+            while True:
+                data = await svc.list_orders(
+                    session, current_user,
+                    page=page, page_size=page_size,
+                    asin=asin, product_search=product_search,
+                    has_review_request=has_review_request, in_window=in_window,
+                    min_purchases=min_purchases, sort=sort,
+                )
+                if not data["items"]:
+                    break
+                for it in data["items"]:
+                    rr = it.get("review_request") or {}
+                    writer.writerow([
+                        it["order_id"], it["shop_site"], it.get("asin") or "",
+                        it.get("product_name") or "", it.get("buyer_email") or "",
+                        it["buyer_key"],
+                        it.get("ship_city") or "", it.get("ship_state") or "",
+                        it.get("ship_country") or "",
+                        it["order_time_utc"].isoformat() if it.get("order_time_utc") else "",
+                        it["estimated_delivery_utc"].isoformat() if it.get("estimated_delivery_utc") else "",
+                        str(it["item_price"]) if it.get("item_price") is not None else "",
+                        it.get("currency") or "",
+                        it.get("quantity") if it.get("quantity") is not None else "",
+                        it["purchase_index"], it["total_purchases"],
+                        rr.get("method") or "", rr.get("status") or "",
+                        "true" if it["can_request_review"] else "false",
+                        it.get("can_request_reason") or "",
+                    ])
+                yield buf.getvalue().encode("utf-8")
+                buf.seek(0)
+                buf.truncate(0)
+                if len(data["items"]) < page_size:
+                    break
+                page += 1
+
+    filename = f"repeat-orders-{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        _rows(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
