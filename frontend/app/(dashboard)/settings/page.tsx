@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { AxiosError } from "axios";
 
@@ -34,6 +35,7 @@ import {
   getRepeatPreview,
 } from "@/lib/settings";
 import { useToast } from "@/lib/toast";
+import { useOnboarding } from "@/lib/use-onboarding";
 import { useSettings } from "@/lib/use-settings";
 import { cn } from "@/lib/utils";
 
@@ -63,7 +65,9 @@ const GRAIN_OPTIONS: ReadonlyArray<{
 ];
 
 export default function SettingsPage() {
+  const router = useRouter();
   const { settings, mutate, isLoading } = useSettings();
+  const { reset: resetOnboarding } = useOnboarding();
   const toast = useToast();
 
   if (isLoading || !settings) {
@@ -250,6 +254,20 @@ export default function SettingsPage() {
             />
           </CardContent>
         </Card>
+
+        {/* ---- Replay onboarding tour ---- */}
+        <div className="pt-2 text-sm text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => {
+              resetOnboarding();
+              router.push("/dashboard");
+            }}
+            className="text-primary hover:underline"
+          >
+            Replay the welcome tour
+          </button>
+        </div>
       </div>
     </>
   );

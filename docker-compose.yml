@@ -82,10 +82,16 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8088}
     volumes:
       - ./frontend:/app
-      # Anonymous volume so the container's node_modules isn't shadowed by the
-      # host bind mount (the host has none).
+      # Anonymous volume so the container's node_modules isn't shadowed by
+      # the (empty) host bind mount.
       - /app/node_modules
-      - /app/.next
+      # Named volume for the Next build cache, so we can wipe it surgically
+      # without dropping node_modules. To recover from a polluted .next after
+      # a `npm run build`:
+      #   docker compose stop frontend
+      #   docker volume rm reviewmaster_frontend-next
+      #   docker compose up -d frontend
+      - frontend-next:/app/.next
     ports:
       # Host port shifted from the standard 3000 — trynsell owns 3000–3010.
       - "3300:3000"
@@ -115,3 +121,4 @@ services:
 volumes:
   pgdata:
   uploads-tmp:
+  frontend-next:

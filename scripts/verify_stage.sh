@@ -160,7 +160,14 @@ check_frontend_lint() {
 }
 
 check_frontend_build() {
-  check "frontend builds" docker compose exec -T frontend npm run build --silent
+  # Run the prod build in a *throwaway* container, NOT in the live dev
+  # container. `compose run --rm` starts a fresh container with its own
+  # anonymous /app/.next and /app/node_modules (the latter is populated
+  # from the image's baked-in node_modules), and is removed on exit.
+  # This keeps the dev server's named `frontend-next` volume untouched so
+  # http://localhost:3300 stays serving fresh dev chunks throughout verify.
+  check "frontend builds" \
+    docker compose run --rm --no-deps -T frontend npm run build --silent
 }
 
 check_alembic_up_to_date() {
