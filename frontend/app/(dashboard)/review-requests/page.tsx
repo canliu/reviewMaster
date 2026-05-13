@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, ListChecks, MessageSquare } from "lucide-react";
@@ -70,7 +70,7 @@ function parseFilters(params: URLSearchParams): UrlFilters {
   };
 }
 
-export default function ReviewRequestsPage() {
+function ReviewRequestsPageInner() {
   const router = useRouter();
   const search = useSearchParams();
   const { settings } = useSettings();
@@ -471,5 +471,13 @@ function DetailPanel({
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+export default function ReviewRequestsPage() {
+  return (
+    <Suspense fallback={<PageHeader title="" />}>
+      <ReviewRequestsPageInner />
+    </Suspense>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AxiosError } from "axios";
@@ -117,7 +117,7 @@ function parseFilters(params: URLSearchParams): UrlFilters {
   };
 }
 
-export default function RepeatOrdersPage() {
+function RepeatOrdersPageInner() {
   const router = useRouter();
   const search = useSearchParams();
   const { settings } = useSettings();
@@ -974,3 +974,11 @@ function Field({
 // Suppress unused-import warning for the icon variant; ESLint flags it
 // since this file's table doesn't render bare Square (the checkbox does).
 void Square;
+
+export default function RepeatOrdersPage() {
+  return (
+    <Suspense fallback={<PageHeader title="" />}>
+      <RepeatOrdersPageInner />
+    </Suspense>
+  );
+}

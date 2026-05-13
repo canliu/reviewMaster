@@ -488,9 +488,11 @@ verify_stage_5() {
   check_grep "review-requests list endpoint responds" "items\|total" \
     curl -sf -H "Authorization: Bearer $token" "${BACKEND_URL}/api/review-requests?page=1&page_size=10"
 
-  # CSV export should set Content-Disposition
+  # CSV export should set Content-Disposition. Use GET (-D dumps headers,
+  # -o discards body) rather than HEAD — FastAPI doesn't auto-register HEAD
+  # handlers for GET routes, so HEAD would 405.
   local headers
-  headers=$(curl -sf -I -H "Authorization: Bearer $token" \
+  headers=$(curl -sf -D - -o /dev/null -H "Authorization: Bearer $token" \
     ${BACKEND_URL}/api/review-requests/export.csv 2>&1)
   if echo "$headers" | grep -qi "content-disposition.*attachment"; then
     pass "CSV export has Content-Disposition: attachment"
