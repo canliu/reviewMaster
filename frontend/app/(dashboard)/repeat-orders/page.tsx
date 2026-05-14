@@ -549,19 +549,23 @@ function RepeatOrdersPageInner() {
           <PopoverContent align="end" className="w-72 space-y-3">
             <div className="text-sm font-medium">Export options</div>
             <div className="space-y-1">
-              <Label className="text-xs">Shop</Label>
+              <Label className="text-xs">Shop or scope</Label>
               <Select value={exportShop} onValueChange={setExportShop}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Pick a shop" />
+                  <SelectValue placeholder="Pick a scope" />
                 </SelectTrigger>
                 <SelectContent>
-                  {(settings?.available_shop_sites ?? []).map((shop) => (
+                  {(settings?.available_scopes ?? []).map((scope) => (
                     <SelectItem
-                      key={shop}
-                      value={shop}
-                      className="font-mono text-xs"
+                      key={scope.value}
+                      value={scope.value}
+                      className={
+                        scope.type === "marketplace"
+                          ? "text-xs font-medium"
+                          : "font-mono text-xs"
+                      }
                     >
-                      {shop}
+                      {scope.label}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -130,12 +130,16 @@ async def create_requests(
         )
 
     # Collect stats keys we need to check repeat-status against.
-    stat_lookup = await _build_repeat_lookup(db, user.id, orders, grain)
+    repeat_lookup = await _build_repeat_lookup(db, user.id, orders, grain)
 
     for order in orders:
-        # 2. repeat status
+        # 2. repeat status — keyed by (marketplace, buyer_key, group_value)
+        #    so cross-shop repeats within one marketplace are accepted.
         group_value = _grain_column_for_order(order, grain)
-        if not group_value or (order.shop_site, order.buyer_key, group_value) not in stat_lookup:
+        market = _marketplace_of(order.shop_site)
+        if not group_value or market is None or (
+            market, order.buyer_key, group_value
+        ) not in repeat_lookup:
             errors.append(
                 {
                     "order_uuid": order.id,
@@ -260,38 +264,73 @@ async def create_requests(
     return {"created": created, "skipped": skipped, "errors": errors}
 
 
+def _marketplace_of(shop_site: str | None) -> str | None:
+    """Extract the marketplace suffix from a shop_site like `p3:US`."""
+    if not shop_site or ":" not in shop_site:
+        return None
+    return shop_site.rsplit(":", 1)[1].strip().upper() or None
+
+
 async def _build_repeat_lookup(
     db: AsyncSession, user_id: UUID, orders: Iterable[Order], grain: str
 ) -> set[tuple[str, str, str]]:
-    """Return the set of (shop_site, buyer_key, group_value) tuples among
-    these orders that are repeat groups (order_count >= 2)."""
-    triples = set()
+    """Return the set of (marketplace, buyer_key, group_value) tuples that
+    are repeat groups (order_count >= 2 summed across the user's shops in
+    that marketplace). Cross-shop matching is per marketplace — see
+    `prompts/SUMMARY.md` and the cross-shop discussion in stage 6."""
+    from collections import defaultdict
+    from sqlalchemy import distinct, func
+
+    # Per order: (marketplace, buyer_key, group_value).
+    by_market: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for o in orders:
         gv = {"asin": o.asin, "spu": o.spu, "product_name": o.product_name}[grain]
-        if gv:
-            triples.add((o.shop_site, o.buyer_key, gv))
-    if not triples:
+        market = _marketplace_of(o.shop_site)
+        if gv and market:
+            by_market[market].add((o.buyer_key, gv))
+    if not by_market:
         return set()
-    shops = {t[0] for t in triples}
-    buyers = {t[1] for t in triples}
-    group_values = {t[2] for t in triples}
 
-    rows = (
+    # Figure out which shop_sites the user has in each relevant marketplace.
+    all_shops = (
         await db.execute(
-            select(
-                BuyerProductStat.shop_site,
-                BuyerProductStat.buyer_key,
-                BuyerProductStat.group_value,
-            )
-            .where(BuyerProductStat.user_id == user_id)
-            .where(BuyerProductStat.grain == grain)
-            .where(BuyerProductStat.order_count >= 2)
-            .where(BuyerProductStat.shop_site.in_(shops))
-            .where(BuyerProductStat.buyer_key.in_(buyers))
-            .where(BuyerProductStat.group_value.in_(group_values))
+            select(distinct(Order.shop_site))
+            .where(Order.user_id == user_id)
+            .where(Order.shop_site.is_not(None))
         )
     ).all()
-    return {(r[0], r[1], r[2]) for r in rows}
+    shops_by_market: dict[str, list[str]] = defaultdict(list)
+    for r in all_shops:
+        market = _marketplace_of(r[0])
+        if market:
+            shops_by_market[market].append(r[0])
+
+    repeat: set[tuple[str, str, str]] = set()
+    for market, keys in by_market.items():
+        market_shops = shops_by_market.get(market, [])
+        if not market_shops:
+            continue
+        buyers = [k[0] for k in keys]
+        group_values = [k[1] for k in keys]
+        rows = (
+            await db.execute(
+                select(
+                    BuyerProductStat.buyer_key,
+                    BuyerProductStat.group_value,
+                    func.sum(BuyerProductStat.order_count),
+                )
+                .where(BuyerProductStat.user_id == user_id)
+                .where(BuyerProductStat.grain == grain)
+                .where(BuyerProductStat.shop_site.in_(market_shops))
+                .where(BuyerProductStat.buyer_key.in_(buyers))
+                .where(BuyerProductStat.group_value.in_(group_values))
+                .group_by(BuyerProductStat.buyer_key, BuyerProductStat.group_value)
+                .having(func.sum(BuyerProductStat.order_count) >= 2)
+            )
+        ).all()
+        for r in rows:
+            repeat.add((market, r[0], r[1]))
+    return repeat
 
 
 # ---------- confirm ----------
