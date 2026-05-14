@@ -134,9 +134,17 @@ async def export_csv(
     asin: str | None = Query(None),
     product_search: str | None = Query(None, min_length=1),
     has_review_request: bool | None = Query(None),
+    request_status: str | None = Query(
+        None,
+        description="Fine-grained: none|pending|sent|failed. Overrides has_review_request when set.",
+    ),
     in_window: bool | None = Query(None),
     min_purchases: int = Query(svc.DEFAULT_MIN_PURCHASES, ge=1),
     sort: str = Query("last_order_desc"),
+    shop_site_override: str | None = Query(
+        None,
+        description="Export a shop other than the active one (CSV exports only).",
+    ),
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     # Fresh session inside the generator — FastAPI closes request-scoped
@@ -177,8 +185,11 @@ async def export_csv(
                     session, current_user,
                     page=page, page_size=page_size,
                     asin=asin, product_search=product_search,
-                    has_review_request=has_review_request, in_window=in_window,
+                    has_review_request=has_review_request,
+                    request_status=request_status,
+                    in_window=in_window,
                     min_purchases=min_purchases, sort=sort,
+                    shop_site_override=shop_site_override,
                 )
                 if not data["items"]:
                     break
@@ -207,7 +218,11 @@ async def export_csv(
                     break
                 page += 1
 
-    filename = f"repeat-orders-{date.today().isoformat()}.csv"
+    # Include shop + status in the filename so multiple downloads don't
+    # overwrite each other in the user's Downloads folder.
+    shop_part = (shop_site_override or "all").replace(":", "-").replace("/", "-")
+    status_part = request_status or "any"
+    filename = f"repeat-orders-{shop_part}-{status_part}-{date.today().isoformat()}.csv"
     return StreamingResponse(
         _rows(),
         media_type="text/csv",

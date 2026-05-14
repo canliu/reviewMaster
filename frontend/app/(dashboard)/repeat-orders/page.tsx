@@ -34,6 +34,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -332,12 +337,35 @@ function RepeatOrdersPageInner() {
     onError: () => toast.error("Couldn't confirm", "Try again."),
   });
 
+  // ---- Export popover state ----
+  const [exportShop, setExportShop] = useState<string>("");
+  const [exportStatus, setExportStatus] = useState<string>("any");
+  useEffect(() => {
+    // Initialize the export-shop picker to the active shop once settings load.
+    if (settings?.active_shop_site && !exportShop) {
+      setExportShop(settings.active_shop_site);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.active_shop_site]);
+
   async function handleExport() {
     try {
+      const exportFilters = {
+        ...apiFilters,
+        shop_site_override: exportShop || undefined,
+        request_status:
+          exportStatus === "any" ? undefined : exportStatus,
+      };
+      // The shop_site_override and request_status filters take precedence
+      // over the page's active-shop / has_review_request scoping.
+      const shop = exportShop || "all";
+      const statusPart = exportStatus === "any" ? "any" : exportStatus;
       await downloadCsv(
         "repeat-orders",
-        apiFilters as Record<string, string | number | boolean | undefined>,
-        `repeat-orders-${new Date().toISOString().slice(0, 10)}.csv`,
+        exportFilters as Record<string, string | number | boolean | undefined>,
+        `repeat-orders-${shop.replace(":", "-")}-${statusPart}-${new Date()
+          .toISOString()
+          .slice(0, 10)}.csv`,
       );
     } catch {
       toast.error("Export failed", "Try again.");
@@ -511,15 +539,64 @@ function RepeatOrdersPageInner() {
             </div>
           ) : null}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleExport}
-          className="gap-2"
-        >
-          <Download className="h-4 w-4" aria-hidden="true" />
-          Export CSV
-        </Button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-2">
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Export CSV
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-72 space-y-3">
+            <div className="text-sm font-medium">Export options</div>
+            <div className="space-y-1">
+              <Label className="text-xs">Shop</Label>
+              <Select value={exportShop} onValueChange={setExportShop}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick a shop" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(settings?.available_shop_sites ?? []).map((shop) => (
+                    <SelectItem
+                      key={shop}
+                      value={shop}
+                      className="font-mono text-xs"
+                    >
+                      {shop}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Review status</Label>
+              <Select value={exportStatus} onValueChange={setExportStatus}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any status</SelectItem>
+                  <SelectItem value="none">Not requested</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="sent">Sent</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Other filters from the page (ASIN, search, in-window, sort)
+              also apply. One file per shop.
+            </p>
+            <Button
+              size="sm"
+              className="w-full gap-2"
+              onClick={handleExport}
+              disabled={!exportShop}
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Download
+            </Button>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* ---- Table ---- */}

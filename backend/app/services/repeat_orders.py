@@ -174,6 +174,9 @@ async def summary(db: AsyncSession, user: User) -> dict[str, int]:
 
 # ---------- list ----------
 
+VALID_REQUEST_STATUSES = {"none", "pending", "sent", "failed"}
+
+
 async def list_orders(
     db: AsyncSession,
     user: User,
@@ -183,18 +186,34 @@ async def list_orders(
     asin: str | None = None,
     product_search: str | None = None,
     has_review_request: bool | None = None,
+    request_status: str | None = None,
     in_window: bool | None = None,
     min_purchases: int = DEFAULT_MIN_PURCHASES,
     sort: str = "last_order_desc",
+    shop_site_override: str | None = None,
 ) -> dict[str, Any]:
+    """List repeat orders.
+
+    ``shop_site_override`` lets the caller (typically the CSV export)
+    pick a shop that isn't the active one. ``request_status`` is a
+    fine-grained filter — when set it overrides ``has_review_request`` and
+    accepts the literal strings ``none|pending|sent|failed``.
+    """
     if sort not in VALID_SORTS:
         raise APIError(422, "INVALID_SORT", f"sort must be one of {sorted(VALID_SORTS)}.")
     if page < 1 or page_size < 1 or page_size > 200:
         raise APIError(422, "INVALID_PAGINATION", "page>=1, 1<=page_size<=200.")
+    if request_status is not None and request_status not in VALID_REQUEST_STATUSES:
+        raise APIError(
+            422,
+            "INVALID_REQUEST_STATUS",
+            f"request_status must be one of {sorted(VALID_REQUEST_STATUSES)}.",
+        )
 
     settings = await _load_settings(db, user)
     empty = {"total": 0, "page": page, "page_size": page_size, "items": []}
-    if settings.active_shop_site is None:
+    shop = (shop_site_override or settings.active_shop_site or "").strip()
+    if not shop:
         return empty
 
     grain = settings.repeat_grain
@@ -267,6 +286,17 @@ async def list_orders(
                 OR (CAST(:has_review_request AS boolean) = TRUE AND any_review_exists)
                 OR (CAST(:has_review_request AS boolean) = FALSE AND NOT any_review_exists)
               )
+              -- request_status: fine-grained — none means "no request row at all",
+              -- pending/sent/failed match the active_review's status when set.
+              AND (
+                CAST(:request_status AS text) IS NULL
+                OR (CAST(:request_status AS text) = 'none' AND NOT any_review_exists)
+                OR (CAST(:request_status AS text) IN ('pending', 'sent')
+                    AND active_review IS NOT NULL
+                    AND active_review->>'status' = CAST(:request_status AS text))
+                OR (CAST(:request_status AS text) = 'failed'
+                    AND any_review_exists AND active_review IS NULL)
+              )
               AND (
                 CAST(:in_window AS boolean) IS NULL
                 OR (CAST(:in_window AS boolean) = TRUE
@@ -294,7 +324,7 @@ async def list_orders(
     now = _now_utc()
     params = {
         "uid": user.id,
-        "shop": settings.active_shop_site,
+        "shop": shop,
         "grain": grain,
         "min_purchases": int(min_purchases),
         "excluded": excluded,
@@ -302,6 +332,7 @@ async def list_orders(
         "product_search": product_search,
         "search_like": f"%{product_search}%" if product_search else None,
         "has_review_request": has_review_request,
+        "request_status": request_status,
         "in_window": in_window,
         "earliest_in_window": now - WINDOW_MAX,
         "latest_in_window": now - WINDOW_MIN,
