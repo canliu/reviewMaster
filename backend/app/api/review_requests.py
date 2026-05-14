@@ -132,11 +132,16 @@ async def export_csv(
                 if not data["items"]:
                     break
                 order_uuids = [it["order_uuid"] for it in data["items"]]
+                # Defense-in-depth: filter by user_id even though the IDs
+                # come from a pre-filtered list. Prevents leakage if a future
+                # refactor relaxes the upstream list's filter.
                 orders_by_id = {
                     o.id: o
                     for o in (
                         await session.execute(
-                            select(Order).where(Order.id.in_(order_uuids))
+                            select(Order)
+                            .where(Order.user_id == current_user.id)
+                            .where(Order.id.in_(order_uuids))
                         )
                     )
                     .scalars()
