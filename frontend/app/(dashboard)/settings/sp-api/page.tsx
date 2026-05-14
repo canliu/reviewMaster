@@ -43,9 +43,9 @@ export default function SpApiSettingsPage() {
   const configured = listQuery.data?.items ?? [];
   const configuredShops = new Set(configured.map((c) => c.shop_site));
 
-  // For the "Add new" form, pick the first unconfigured shop.
-  const availableShops = settings?.available_shop_sites ?? [];
-  const unconfiguredShops = availableShops.filter((s) => !configuredShops.has(s));
+  // Surface uploaded shops as a HINT, not a gate.
+  const uploadedShops = settings?.available_shop_sites ?? [];
+  const suggestedShops = uploadedShops.filter((s) => !configuredShops.has(s));
 
   if (listQuery.isLoading) {
     return (
@@ -60,7 +60,7 @@ export default function SpApiSettingsPage() {
     <>
       <PageHeader
         title="SP-API connections"
-        description="One SP-API credential set per Amazon shop. Connect each shop you want to send review requests for."
+        description="One credential set per Amazon shop. Connect each shop you want to send review requests for — you can do this before uploading orders."
         actions={
           <Button variant="ghost" onClick={() => router.push("/settings")}>
             ← Back to settings
@@ -69,15 +69,6 @@ export default function SpApiSettingsPage() {
       />
 
       <div className="space-y-6">
-        {availableShops.length === 0 ? (
-          <Card className="max-w-2xl">
-            <CardContent className="p-6 text-sm text-muted-foreground">
-              Upload an order file first so we know which Amazon shops you
-              have. Then come back here to connect them.
-            </CardContent>
-          </Card>
-        ) : null}
-
         {configured.map((meta) => (
           <ShopCard
             key={meta.shop_site}
@@ -86,14 +77,14 @@ export default function SpApiSettingsPage() {
           />
         ))}
 
-        {unconfiguredShops.length > 0 ? (
-          <ShopCard
-            key="new"
-            shopSite={null}
-            metadata={null}
-            unconfiguredShops={unconfiguredShops}
-          />
-        ) : null}
+        {/* Always show the connect-a-new-shop card. shop_site is a free-text
+         *  field — uploaded shops are surfaced as a hint, not a constraint. */}
+        <ShopCard
+          key="new"
+          shopSite={null}
+          metadata={null}
+          suggestedShops={suggestedShops}
+        />
       </div>
     </>
   );
@@ -102,21 +93,20 @@ export default function SpApiSettingsPage() {
 function ShopCard({
   shopSite,
   metadata,
-  unconfiguredShops,
+  suggestedShops,
 }: {
   shopSite: string | null;
   metadata: SpApiCredentialsMetadata | null;
-  unconfiguredShops?: string[];
+  suggestedShops?: string[];
 }) {
   const isNew = metadata === null;
   const queryClient = useQueryClient();
   const toast = useToast();
 
-  // For the "new" card we need a shop-picker as well.
-  const [pickedShop, setPickedShop] = useState<string>(
-    unconfiguredShops?.[0] ?? "",
+  const [shopSiteDraft, setShopSiteDraft] = useState<string>(
+    shopSite ?? "",
   );
-  const effectiveShop = shopSite ?? pickedShop;
+  const effectiveShop = (shopSite ?? shopSiteDraft).trim();
 
   const [lwaClientId, setLwaClientId] = useState("");
   const [lwaClientSecret, setLwaClientSecret] = useState("");
@@ -138,6 +128,12 @@ function ShopCard({
     mutationFn: saveSpApiCredentials,
     onSuccess: () => {
       toast.success(`Credentials saved for ${effectiveShop}`);
+      // Clear the new-card form so it's ready for another shop.
+      if (isNew) {
+        setShopSiteDraft("");
+        setLwaClientId("");
+        setSellingPartnerId("");
+      }
       setLwaClientSecret("");
       setRefreshToken("");
       void queryClient.invalidateQueries({ queryKey: ["sp-api-credentials"] });
@@ -178,9 +174,7 @@ function ShopCard({
     marketplaceId.length > 0 &&
     (isNew
       ? lwaClientSecret.length > 0 && refreshToken.length > 0
-      : lwaClientSecret.length > 0 || refreshToken.length > 0 ||
-        // allow updating non-secret fields by themselves
-        true);
+      : true);
 
   function onSave() {
     if (!canSave) return;
@@ -198,13 +192,14 @@ function ShopCard({
     <Card className="max-w-2xl">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Plug className="h-4 w-4" aria-hidden="true" />
           {isNew ? (
             <>
-              <Plus className="h-4 w-4" /> Connect a new shop
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Connect a new shop
             </>
           ) : (
             <>
+              <Plug className="h-4 w-4" aria-hidden="true" />
               <span className="font-mono">{shopSite}</span>
               <span className="inline-flex items-center gap-1 text-success">
                 <CheckCircle2 className="h-4 w-4" /> Connected
@@ -214,21 +209,37 @@ function ShopCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isNew && unconfiguredShops && unconfiguredShops.length > 0 ? (
+        {isNew ? (
           <div>
-            <Label>Shop</Label>
-            <Select value={pickedShop} onValueChange={setPickedShop}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {unconfiguredShops.map((s) => (
-                  <SelectItem key={s} value={s} className="font-mono text-xs">
+            <Label htmlFor="shop-site-input">Shop site</Label>
+            <Input
+              id="shop-site-input"
+              value={shopSiteDraft}
+              onChange={(e) => setShopSiteDraft(e.target.value)}
+              placeholder="e.g. p3:US"
+              className="font-mono text-sm"
+              autoComplete="off"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Must match the shop_site string in your Amazon order exports —
+              the format the file uses (often <code>p3:US</code>,{" "}
+              <code>p3:CA</code>, …).
+            </p>
+            {suggestedShops && suggestedShops.length > 0 ? (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">From your uploads:</span>
+                {suggestedShops.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setShopSiteDraft(s)}
+                    className="rounded border border-border px-1.5 py-0.5 font-mono hover:bg-muted"
+                  >
                     {s}
-                  </SelectItem>
+                  </button>
                 ))}
-              </SelectContent>
-            </Select>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
