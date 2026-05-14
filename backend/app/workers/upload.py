@@ -1,11 +1,17 @@
 """RQ job: ingest an uploaded .xlsx of Amazon orders.
 
-Steps mirror stage_2_upload.md exactly:
+Steps:
   1. Load workbook (sheet ``配送信息``).
   2. Validate required columns; bail if missing.
   3. Process in 500-row chunks, each in its own transaction.
-  4. Upsert into ``orders`` with ON CONFLICT (user_id, order_id) and
-     RETURNING (xmax = 0) so we can count new vs updated rows.
+  4. Insert into ``orders`` with ON CONFLICT (user_id, order_id) DO NOTHING.
+     Rows whose order_id already exists for this user are SKIPPED — the
+     existing row is left untouched. This trades correctness for speed:
+     Amazon's late corrections to old orders (new tracking number,
+     ship-time fixup, address fix) will not propagate. Delete the affected
+     orders if you need to re-ingest them. The ``updated_rows`` counter
+     reports the skip count (kept under that name for historical
+     compatibility with the schema and frontend).
   5. Refresh ``buyer_product_stats`` for the affected (shop, buyer, group)
      tuples across the three grains.
   6. Mark batch completed, run the first-upload hook, drop the temp file.
@@ -132,10 +138,9 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
         chunk_rows: list[dict[str, Any]] = []
         chunk_affected: list[tuple[str, str, str | None, str | None, str | None]] = []
 
-        # Dedup map per chunk: keeping the LAST occurrence of each order_id
-        # satisfies the prompt's "second occurrence overwrites" rule AND lets
-        # the bulk INSERT ... ON CONFLICT statement succeed (Postgres refuses
-        # to UPDATE the same row twice within a single ON CONFLICT statement).
+        # Dedup map per chunk: collapse intra-chunk duplicates so the bulk
+        # INSERT sees each order_id at most once. With DO NOTHING semantics
+        # any survivor is fine — collisions are skipped regardless.
         chunk_by_order: dict[str, dict[str, Any]] = {}
         for _idx, row in chunk.iterrows():
             built = _build_order_record(row, user_id, present_map, raw_columns)
@@ -163,16 +168,21 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
 
         if chunk_rows:
             with SyncSessionLocal() as session:
-                new_count, updated_count = _upsert_chunk(session, user_id, chunk_rows)
-                # `new_count + updated_count` is the count of rows that made
-                # it into the DB this chunk. A row whose order_id repeated
-                # within the batch only reaches the DB once (last write wins)
-                # but the original new/updated counter shouldn't double-count
-                # it; the in-batch dup is already tallied above.
+                new_count, skipped_count, inserted_ids = _insert_new_chunk(
+                    session, user_id, chunk_rows
+                )
+                # `new_count` rows landed in DB; `skipped_count` rows were
+                # discarded because their order_id already existed for this
+                # user. Tracked under the legacy `updated_rows` field.
                 counters["new_rows"] += new_count
-                counters["updated_rows"] += updated_count
+                counters["updated_rows"] += skipped_count
                 session.commit()
-            affected.update(chunk_affected)
+            # Stats refresh only needs to consider newly-inserted rows;
+            # skipped rows didn't change the (shop, buyer, group) tuple's
+            # state in DB.
+            for rec, ca in zip(chunk_rows, chunk_affected):
+                if rec["order_id"] in inserted_ids:
+                    affected.add(ca)
 
         progress = end
         with SyncSessionLocal() as session:
@@ -335,32 +345,25 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return ts
 
 
-_UPDATE_ON_CONFLICT_COLS = (
-    "shop_site", "asin", "msku", "sku", "spu",
-    "product_name", "product_title", "parent_product_name", "order_type",
-    "buyer_email", "buyer_key",
-    "order_time_utc", "ship_time_utc", "estimated_delivery_utc",
-    "item_price", "currency", "quantity",
-    "ship_city", "ship_state", "ship_country",
-    "tracking_number", "carrier",
-    "raw_json",
-)
-
-
-def _upsert_chunk(
+def _insert_new_chunk(
     session: Session, user_id: UUID, rows: list[dict[str, Any]]
-) -> tuple[int, int]:
-    """Bulk upsert with conflict counting. Two round-trips per chunk:
+) -> tuple[int, int, set[str]]:
+    """Bulk-insert new orders, skipping rows whose (user_id, order_id)
+    already exists in the database. Two round-trips per chunk:
 
       1. SELECT to learn which order_ids already exist for this user.
-      2. One multi-row INSERT ... ON CONFLICT DO UPDATE.
+      2. One multi-row INSERT ... ON CONFLICT DO NOTHING for the survivors.
 
-    Returns ``(new_count, updated_count)``. The earlier implementation did
-    one round-trip per row to capture ``RETURNING (xmax = 0)``, which
-    crawled on 30k-row uploads.
+    Returns ``(new_count, skipped_count, inserted_order_ids)``. The
+    DO NOTHING fallback is belt-and-suspenders for a concurrent upload
+    that raced in between the SELECT and the INSERT.
+
+    Skipped rows are NOT updated — Amazon's late corrections to old
+    orders will not propagate. Delete the affected orders if you need
+    to re-ingest them.
     """
     if not rows:
-        return 0, 0
+        return 0, 0, set()
 
     order_ids = [r["order_id"] for r in rows]
     existing = set(
@@ -371,18 +374,19 @@ def _upsert_chunk(
         ).all()
     )
 
-    stmt = pg_insert(Order).values(rows)
-    update_map = {col: stmt.excluded[col] for col in _UPDATE_ON_CONFLICT_COLS}
-    update_map["updated_at"] = text("NOW()")
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["user_id", "order_id"],
-        set_=update_map,
-    )
-    session.execute(stmt)
+    new_rows = [r for r in rows if r["order_id"] not in existing]
+    skipped_count = len(rows) - len(new_rows)
 
-    new_count = sum(1 for r in rows if r["order_id"] not in existing)
-    updated_count = len(rows) - new_count
-    return new_count, updated_count
+    if new_rows:
+        stmt = (
+            pg_insert(Order)
+            .values(new_rows)
+            .on_conflict_do_nothing(index_elements=["user_id", "order_id"])
+        )
+        session.execute(stmt)
+
+    inserted_ids = {r["order_id"] for r in new_rows}
+    return len(new_rows), skipped_count, inserted_ids
 
 
 def _modal_shop(session: Session, user_id: UUID) -> str | None:

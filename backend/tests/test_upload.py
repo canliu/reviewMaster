@@ -125,12 +125,77 @@ async def test_reupload_is_all_duplicates(client: AsyncClient) -> None:
         refreshed = session.get(UploadBatch, second_batch_id)
         assert refreshed is not None
         assert refreshed.status == "completed"
-        # Every row maps to an existing (user_id, order_id) → 0 new, 10 updated.
+        # Every row maps to an existing (user_id, order_id) → 0 new, 10
+        # skipped (reported in updated_rows for historical compatibility).
         assert refreshed.new_rows == 0
         assert refreshed.updated_rows == 10
         # orders table size stays at 10
         order_count = session.scalar(select(_count_user_orders(user.id)))
         assert order_count == 10
+
+
+async def test_reupload_does_not_modify_existing_row(client: AsyncClient) -> None:
+    """Skipping duplicates means the existing row's columns must NOT change,
+    even when the new file disagrees with the DB."""
+    user, batch, path = await _make_user_and_batch()
+    process_upload(str(batch.id), str(user.id), str(path))
+
+    # Snapshot one order's tracking number and item_price before the
+    # second upload.
+    with SyncSessionLocal() as session:
+        original = session.scalar(
+            select(Order).where(Order.user_id == user.id, Order.order_id == "O1")
+        )
+        assert original is not None
+        original_tracking = original.tracking_number
+        original_price = original.item_price
+
+    # Build a second fixture where order O1 has a different tracking
+    # number and price. After re-upload the existing row should still
+    # carry the original values — proof that duplicates are skipped, not
+    # upserted.
+    second_batch_id = uuid.uuid4()
+    second_path = TMP_DIR / f"{second_batch_id}.xlsx"
+    shutil.copyfile(SAMPLE_FIXTURE, second_path)
+    wb = openpyxl.load_workbook(second_path)
+    ws = wb["配送信息"]
+    headers = [c.value for c in ws[1]]
+    tracking_col = headers.index("追踪号码") + 1
+    price_col = headers.index("商品售价") + 1
+    order_col = headers.index("订单编号") + 1
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row=row, column=order_col).value == "O1":
+            ws.cell(row=row, column=tracking_col).value = "TRK-CHANGED"
+            ws.cell(row=row, column=price_col).value = 999.99
+            break
+    wb.save(second_path)
+
+    with SyncSessionLocal() as session:
+        session.add(
+            UploadBatch(
+                id=second_batch_id,
+                user_id=user.id,
+                filename="sample-mutated.xlsx",
+                file_size_bytes=second_path.stat().st_size,
+                status="processing",
+            )
+        )
+        session.commit()
+
+    process_upload(str(second_batch_id), str(user.id), str(second_path))
+
+    with SyncSessionLocal() as session:
+        refreshed = session.get(UploadBatch, second_batch_id)
+        assert refreshed is not None
+        assert refreshed.new_rows == 0
+        assert refreshed.updated_rows == 10  # all 10 rows skipped
+
+        unchanged = session.scalar(
+            select(Order).where(Order.user_id == user.id, Order.order_id == "O1")
+        )
+        assert unchanged is not None
+        assert unchanged.tracking_number == original_tracking
+        assert unchanged.item_price == original_price
 
 
 async def test_buyer_key_falls_back_to_address(client: AsyncClient) -> None:
