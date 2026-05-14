@@ -90,6 +90,7 @@ interface UrlFilters {
   in_window: "" | "true" | "false";
   min_purchases: number;
   sort: RepeatSort;
+  shop_filter: string;
 }
 
 const DEFAULT_FILTERS: UrlFilters = {
@@ -100,6 +101,7 @@ const DEFAULT_FILTERS: UrlFilters = {
   in_window: "",
   min_purchases: 2,
   sort: "last_order_desc",
+  shop_filter: "",
 };
 
 function parseFilters(params: URLSearchParams): UrlFilters {
@@ -115,6 +117,7 @@ function parseFilters(params: URLSearchParams): UrlFilters {
       hr === "true" ? "true" : hr === "false" ? "false" : "",
     in_window: iw === "true" ? "true" : iw === "false" ? "false" : "",
     min_purchases: Number(params.get("min_purchases")) || 2,
+    shop_filter: get("shop_filter"),
     sort: ["last_order_desc", "purchase_count_desc", "delivery_asc"].includes(
       sort,
     )
@@ -177,6 +180,7 @@ function RepeatOrdersPageInner() {
           : urlFilters.in_window === "true",
       min_purchases: urlFilters.min_purchases,
       sort: urlFilters.sort,
+      shop_filter: urlFilters.shop_filter || undefined,
     }),
     [urlFilters],
   );
@@ -216,6 +220,35 @@ function RepeatOrdersPageInner() {
   const configuredSpApiShops = new Set(
     (spApiQuery.data?.items ?? []).map((c) => c.shop_site),
   );
+
+  // Shops within the active scope — populates the Shop filter dropdown.
+  // If scope is a real shop (e.g. p3:US), only that shop is in scope.
+  // If scope is `all:US`, all the user's shops with the US marketplace
+  // are in scope.
+  const scopeShops = useMemo(() => {
+    const scope = settings?.active_shop_site ?? "";
+    const shops = settings?.available_shop_sites ?? [];
+    if (!scope) return shops;
+    if (scope.startsWith("all:")) {
+      const market = scope.slice(4).toUpperCase();
+      return shops.filter(
+        (s) => s.includes(":") && s.split(":").pop()?.toUpperCase() === market,
+      );
+    }
+    return shops.includes(scope) ? [scope] : shops;
+  }, [settings?.active_shop_site, settings?.available_shop_sites]);
+
+  // Reset the shop_filter URL param if the active scope changes and the
+  // current filter value isn't in the new scope.
+  useEffect(() => {
+    if (
+      urlFilters.shop_filter &&
+      !scopeShops.includes(urlFilters.shop_filter)
+    ) {
+      updateParam("shop_filter", "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeShops.join(","), urlFilters.shop_filter]);
 
   // Row selection — local state, reset on page change.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -439,7 +472,7 @@ function RepeatOrdersPageInner() {
       </div>
 
       {/* ---- Filter bar ---- */}
-      <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-6">
+      <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-7">
         <div>
           <Label htmlFor="asin-filter" className="text-xs">
             ASIN
@@ -496,6 +529,27 @@ function RepeatOrdersPageInner() {
               <SelectItem value="any">Any</SelectItem>
               <SelectItem value="true">In review window</SelectItem>
               <SelectItem value="false">Outside window</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Shop</Label>
+          <Select
+            value={urlFilters.shop_filter || "any"}
+            onValueChange={(v) =>
+              updateParam("shop_filter", v === "any" ? "" : v)
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any shop</SelectItem>
+              {scopeShops.map((shop) => (
+                <SelectItem key={shop} value={shop} className="font-mono text-xs">
+                  {shop}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

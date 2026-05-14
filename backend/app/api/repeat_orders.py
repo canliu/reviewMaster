@@ -107,6 +107,10 @@ async def list_endpoint(
     in_window: bool | None = Query(None),
     min_purchases: int = Query(svc.DEFAULT_MIN_PURCHASES, ge=1),
     sort: str = Query("last_order_desc"),
+    shop_filter: str | None = Query(
+        None,
+        description="Narrow visible rows to one shop_site (does not change which orders count as repeats).",
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RepeatOrderList:
@@ -123,6 +127,7 @@ async def list_endpoint(
                 in_window=in_window,
                 min_purchases=min_purchases,
                 sort=sort,
+                shop_filter=shop_filter,
             )
         )
     )
@@ -143,7 +148,11 @@ async def export_csv(
     sort: str = Query("last_order_desc"),
     shop_site_override: str | None = Query(
         None,
-        description="Export a shop other than the active one (CSV exports only).",
+        description="Export a shop or scope other than the active one (CSV exports only).",
+    ),
+    shop_filter: str | None = Query(
+        None,
+        description="Narrow exported rows to one shop_site within the scope.",
     ),
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -190,6 +199,7 @@ async def export_csv(
                     in_window=in_window,
                     min_purchases=min_purchases, sort=sort,
                     shop_site_override=shop_site_override,
+                    shop_filter=shop_filter,
                 )
                 if not data["items"]:
                     break

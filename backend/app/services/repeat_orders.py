@@ -242,6 +242,7 @@ async def list_orders(
     min_purchases: int = DEFAULT_MIN_PURCHASES,
     sort: str = "last_order_desc",
     shop_site_override: str | None = None,
+    shop_filter: str | None = None,
 ) -> dict[str, Any]:
     """List repeat orders.
 
@@ -337,6 +338,11 @@ async def list_orders(
               AND (CAST(:product_search AS text) IS NULL
                    OR product_name ILIKE :search_like
                    OR product_title ILIKE :search_like)
+              -- shop_filter narrows the result rows to one specific shop
+              -- WITHOUT changing which orders count as repeats (the scope
+              -- already determined that). Useful when scope = all:US and the
+              -- user wants to focus on one shop's slice of the cross-shop pool.
+              AND (CAST(:shop_filter AS text) IS NULL OR shop_site = :shop_filter)
               AND (
                 CAST(:has_review_request AS boolean) IS NULL
                 OR (CAST(:has_review_request AS boolean) = TRUE AND any_review_exists)
@@ -389,6 +395,7 @@ async def list_orders(
         "search_like": f"%{product_search}%" if product_search else None,
         "has_review_request": has_review_request,
         "request_status": request_status,
+        "shop_filter": shop_filter,
         "in_window": in_window,
         "earliest_in_window": now - WINDOW_MAX,
         "latest_in_window": now - WINDOW_MIN,

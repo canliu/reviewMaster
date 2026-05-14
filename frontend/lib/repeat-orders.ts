@@ -86,6 +86,9 @@ export interface RepeatOrderFilters {
   in_window?: boolean;
   min_purchases?: number;
   sort: RepeatSort;
+  /** Narrow the visible rows to one shop_site (does not change the repeat
+   *  computation; useful when the active scope spans multiple shops). */
+  shop_filter?: string;
 }
 
 export async function fetchSummary(): Promise<RepeatOrderSummary> {
@@ -110,6 +113,7 @@ export async function fetchList(
   if (filters.in_window !== undefined) params.in_window = filters.in_window;
   if (filters.min_purchases !== undefined)
     params.min_purchases = filters.min_purchases;
+  if (filters.shop_filter) params.shop_filter = filters.shop_filter;
   const { data } = await api.get<RepeatOrderList>("/api/repeat-orders", {
     params,
   });
