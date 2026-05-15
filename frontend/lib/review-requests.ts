@@ -63,7 +63,7 @@ export interface ListFilters {
 
 export async function createReviewRequests(body: {
   order_uuids: string[];
-  method: "manual" | "link";
+  method: "manual" | "link" | "api";
   note?: string;
 }): Promise<CreateResult> {
   const { data } = await api.post<CreateResult>("/api/review-requests", body);

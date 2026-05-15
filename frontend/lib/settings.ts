@@ -2,6 +2,13 @@ import { api } from "@/lib/api";
 
 export type RepeatGrain = "asin" | "spu" | "product_name";
 
+export interface ScopeEntry {
+  value: string;
+  label: string;
+  type: "shop" | "marketplace";
+  marketplace: string | null;
+}
+
 export interface Settings {
   active_shop_site: string | null;
   repeat_grain: RepeatGrain;
@@ -9,6 +16,7 @@ export interface Settings {
   timezone: string;
   available_shop_sites: string[];
   available_order_types: string[];
+  available_scopes: ScopeEntry[];
 }
 
 export interface SettingsPatch {

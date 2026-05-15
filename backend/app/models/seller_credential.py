@@ -11,7 +11,12 @@ from app.models import Base
 
 
 class SellerCredential(Base):
-    """Encrypted SP-API credentials. Created here, populated in Stage 6."""
+    """Encrypted SP-API credentials, one row per (user, shop_site).
+
+    Sellers commonly manage one Amazon developer app per marketplace, so we
+    key on the user's shop_site (the same string surfaced in the shop
+    switcher) rather than a single credential set per user.
+    """
 
     __tablename__ = "seller_credentials"
 
@@ -20,6 +25,7 @@ class SellerCredential(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    shop_site: Mapped[str] = mapped_column(String, primary_key=True)
     dek_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     refresh_token_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     lwa_client_id: Mapped[str] = mapped_column(String, nullable=False)

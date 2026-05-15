@@ -170,7 +170,8 @@ function ShopSwitcher() {
     );
   }
 
-  if (settings.available_shop_sites.length === 0) {
+  const scopes = settings.available_scopes ?? [];
+  if (scopes.length === 0) {
     return (
       <span className="text-xs text-muted-foreground">
         Upload an order file to start.
@@ -185,13 +186,21 @@ function ShopSwitcher() {
         void mutate({ active_shop_site: value });
       }}
     >
-      <SelectTrigger className="h-9 w-44" aria-label="Active shop">
-        <SelectValue placeholder="Pick a shop" />
+      <SelectTrigger className="h-9 w-52" aria-label="Active shop or scope">
+        <SelectValue placeholder="Pick a scope" />
       </SelectTrigger>
       <SelectContent align="end">
-        {settings.available_shop_sites.map((shop) => (
-          <SelectItem key={shop} value={shop} className="font-mono text-xs">
-            {shop}
+        {scopes.map((scope) => (
+          <SelectItem
+            key={scope.value}
+            value={scope.value}
+            className={
+              scope.type === "marketplace"
+                ? "text-xs font-medium"
+                : "font-mono text-xs"
+            }
+          >
+            {scope.label}
           </SelectItem>
         ))}
       </SelectContent>

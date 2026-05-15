@@ -32,7 +32,43 @@ async def get_settings(db: AsyncSession, user: User) -> dict[str, Any]:
         "timezone": user.timezone,
         "available_shop_sites": available_shops,
         "available_order_types": available_types,
+        "available_scopes": _build_scopes(available_shops),
     }
+
+
+def _build_scopes(available_shops: list[str]) -> list[dict[str, str]]:
+    """Build the scope list shown in the shop switcher.
+
+    Each real shop_site is one scope. Marketplaces with 2+ shops also get
+    an `all:<MARKET>` virtual scope at the top (cross-shop within that
+    marketplace).
+    """
+    from collections import defaultdict
+
+    by_market: dict[str, list[str]] = defaultdict(list)
+    for shop in available_shops:
+        if ":" in shop:
+            market = shop.rsplit(":", 1)[1].strip().upper()
+            if market:
+                by_market[market].append(shop)
+
+    scopes: list[dict[str, str]] = []
+    for market in sorted(by_market):
+        shops = by_market[market]
+        if len(shops) >= 2:
+            scopes.append(
+                {
+                    "value": f"all:{market}",
+                    "label": f"All shops · {market} ({len(shops)})",
+                    "type": "marketplace",
+                    "marketplace": market,
+                }
+            )
+        for shop in sorted(shops):
+            scopes.append(
+                {"value": shop, "label": shop, "type": "shop", "marketplace": market}
+            )
+    return scopes
 
 
 async def update_settings(
@@ -45,11 +81,12 @@ async def update_settings(
 
     if "active_shop_site" in patch:
         value = patch["active_shop_site"]
-        if value is not None and value not in available_shops:
+        valid_values = {s["value"] for s in _build_scopes(available_shops)}
+        if value is not None and value not in valid_values:
             raise APIError(
                 422,
                 "INVALID_SHOP_SITE",
-                f"'{value}' is not one of your uploaded shops.",
+                f"'{value}' is not one of your scopes.",
             )
         settings_row.active_shop_site = value
 

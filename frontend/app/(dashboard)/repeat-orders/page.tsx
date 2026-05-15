@@ -34,6 +34,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -69,6 +74,7 @@ import {
   createReviewRequests,
   downloadCsv,
 } from "@/lib/review-requests";
+import { listSpApiCredentials } from "@/lib/sp-api";
 import { useToast } from "@/lib/toast";
 import { useDebounce } from "@/lib/use-debounce";
 import { useSettings } from "@/lib/use-settings";
@@ -84,6 +90,7 @@ interface UrlFilters {
   in_window: "" | "true" | "false";
   min_purchases: number;
   sort: RepeatSort;
+  shop_filter: string;
 }
 
 const DEFAULT_FILTERS: UrlFilters = {
@@ -94,6 +101,7 @@ const DEFAULT_FILTERS: UrlFilters = {
   in_window: "",
   min_purchases: 2,
   sort: "last_order_desc",
+  shop_filter: "",
 };
 
 function parseFilters(params: URLSearchParams): UrlFilters {
@@ -109,6 +117,7 @@ function parseFilters(params: URLSearchParams): UrlFilters {
       hr === "true" ? "true" : hr === "false" ? "false" : "",
     in_window: iw === "true" ? "true" : iw === "false" ? "false" : "",
     min_purchases: Number(params.get("min_purchases")) || 2,
+    shop_filter: get("shop_filter"),
     sort: ["last_order_desc", "purchase_count_desc", "delivery_asc"].includes(
       sort,
     )
@@ -171,6 +180,7 @@ function RepeatOrdersPageInner() {
           : urlFilters.in_window === "true",
       min_purchases: urlFilters.min_purchases,
       sort: urlFilters.sort,
+      shop_filter: urlFilters.shop_filter || undefined,
     }),
     [urlFilters],
   );
@@ -192,7 +202,53 @@ function RepeatOrdersPageInner() {
     queryFn: () => fetchList(apiFilters),
     enabled: Boolean(settings?.active_shop_site),
     placeholderData: (prev) => prev,
+    // Poll every 3s while any visible row has a pending request — off otherwise.
+    refetchInterval: (q) => {
+      const data = q.state.data as { items?: RepeatOrderItem[] } | undefined;
+      const hasPending = (data?.items ?? []).some(
+        (it: RepeatOrderItem) => it.review_request?.status === "pending",
+      );
+      return hasPending ? 3000 : false;
+    },
   });
+
+  // SP-API config — used to enable/disable the API-send action per row.
+  const spApiQuery = useQuery({
+    queryKey: ["sp-api-credentials"],
+    queryFn: listSpApiCredentials,
+  });
+  const configuredSpApiShops = new Set(
+    (spApiQuery.data?.items ?? []).map((c) => c.shop_site),
+  );
+
+  // Shops within the active scope — populates the Shop filter dropdown.
+  // If scope is a real shop (e.g. p3:US), only that shop is in scope.
+  // If scope is `all:US`, all the user's shops with the US marketplace
+  // are in scope.
+  const scopeShops = useMemo(() => {
+    const scope = settings?.active_shop_site ?? "";
+    const shops = settings?.available_shop_sites ?? [];
+    if (!scope) return shops;
+    if (scope.startsWith("all:")) {
+      const market = scope.slice(4).toUpperCase();
+      return shops.filter(
+        (s) => s.includes(":") && s.split(":").pop()?.toUpperCase() === market,
+      );
+    }
+    return shops.includes(scope) ? [scope] : shops;
+  }, [settings?.active_shop_site, settings?.available_shop_sites]);
+
+  // Reset the shop_filter URL param if the active scope changes and the
+  // current filter value isn't in the new scope.
+  useEffect(() => {
+    if (
+      urlFilters.shop_filter &&
+      !scopeShops.includes(urlFilters.shop_filter)
+    ) {
+      updateParam("shop_filter", "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeShops.join(","), urlFilters.shop_filter]);
 
   // Row selection — local state, reset on page change.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -288,6 +344,22 @@ function RepeatOrdersPageInner() {
     onError: () => toast.error("Couldn't confirm", "Try again."),
   });
 
+  const apiMutation = useMutation({
+    mutationFn: (orderUuids: string[]) =>
+      createReviewRequests({ order_uuids: orderUuids, method: "api" }),
+    onSuccess: (result) => {
+      reportResults(result);
+      refresh();
+      setSelected(new Set());
+    },
+    onError: (err) => {
+      const detail =
+        (err as AxiosError<{ detail?: string }>).response?.data?.detail ??
+        "Try again.";
+      toast.error("Couldn't send via API", detail);
+    },
+  });
+
   const confirmAsManualMut = useMutation({
     mutationFn: confirmAsManual,
     onSuccess: () => {
@@ -298,12 +370,35 @@ function RepeatOrdersPageInner() {
     onError: () => toast.error("Couldn't confirm", "Try again."),
   });
 
+  // ---- Export popover state ----
+  const [exportShop, setExportShop] = useState<string>("");
+  const [exportStatus, setExportStatus] = useState<string>("any");
+  useEffect(() => {
+    // Initialize the export-shop picker to the active shop once settings load.
+    if (settings?.active_shop_site && !exportShop) {
+      setExportShop(settings.active_shop_site);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.active_shop_site]);
+
   async function handleExport() {
     try {
+      const exportFilters = {
+        ...apiFilters,
+        shop_site_override: exportShop || undefined,
+        request_status:
+          exportStatus === "any" ? undefined : exportStatus,
+      };
+      // The shop_site_override and request_status filters take precedence
+      // over the page's active-shop / has_review_request scoping.
+      const shop = exportShop || "all";
+      const statusPart = exportStatus === "any" ? "any" : exportStatus;
       await downloadCsv(
         "repeat-orders",
-        apiFilters as Record<string, string | number | boolean | undefined>,
-        `repeat-orders-${new Date().toISOString().slice(0, 10)}.csv`,
+        exportFilters as Record<string, string | number | boolean | undefined>,
+        `repeat-orders-${shop.replace(":", "-")}-${statusPart}-${new Date()
+          .toISOString()
+          .slice(0, 10)}.csv`,
       );
     } catch {
       toast.error("Export failed", "Try again.");
@@ -377,7 +472,7 @@ function RepeatOrdersPageInner() {
       </div>
 
       {/* ---- Filter bar ---- */}
-      <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-6">
+      <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-7">
         <div>
           <Label htmlFor="asin-filter" className="text-xs">
             ASIN
@@ -438,6 +533,27 @@ function RepeatOrdersPageInner() {
           </Select>
         </div>
         <div>
+          <Label className="text-xs">Shop</Label>
+          <Select
+            value={urlFilters.shop_filter || "any"}
+            onValueChange={(v) =>
+              updateParam("shop_filter", v === "any" ? "" : v)
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any shop</SelectItem>
+              {scopeShops.map((shop) => (
+                <SelectItem key={shop} value={shop} className="font-mono text-xs">
+                  {shop}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
           <Label className="text-xs">Sort</Label>
           <Select
             value={urlFilters.sort}
@@ -477,15 +593,68 @@ function RepeatOrdersPageInner() {
             </div>
           ) : null}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleExport}
-          className="gap-2"
-        >
-          <Download className="h-4 w-4" aria-hidden="true" />
-          Export CSV
-        </Button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-2">
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Export CSV
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-72 space-y-3">
+            <div className="text-sm font-medium">Export options</div>
+            <div className="space-y-1">
+              <Label className="text-xs">Shop or scope</Label>
+              <Select value={exportShop} onValueChange={setExportShop}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick a scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(settings?.available_scopes ?? []).map((scope) => (
+                    <SelectItem
+                      key={scope.value}
+                      value={scope.value}
+                      className={
+                        scope.type === "marketplace"
+                          ? "text-xs font-medium"
+                          : "font-mono text-xs"
+                      }
+                    >
+                      {scope.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Review status</Label>
+              <Select value={exportStatus} onValueChange={setExportStatus}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any status</SelectItem>
+                  <SelectItem value="none">Not requested</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="sent">Sent</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Other filters from the page (ASIN, search, in-window, sort)
+              also apply. One file per shop.
+            </p>
+            <Button
+              size="sm"
+              className="w-full gap-2"
+              onClick={handleExport}
+              disabled={!exportShop}
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Download
+            </Button>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* ---- Table ---- */}
@@ -556,6 +725,7 @@ function RepeatOrdersPageInner() {
                   onOpenDetail={() => setDetailUuid(item.order_uuid)}
                   onManualMark={() => manualMutation.mutate([item.order_uuid])}
                   onOpenAmazon={() => linkMutation.mutate(item.order_uuid)}
+                  onApiSend={() => apiMutation.mutate([item.order_uuid])}
                   onReopenPending={() => {
                     const rr = item.review_request;
                     if (rr) {
@@ -572,8 +742,11 @@ function RepeatOrdersPageInner() {
                       });
                     }
                   }}
+                  spApiConfigured={configuredSpApiShops.has(item.shop_site)}
                   busy={
-                    manualMutation.isPending || linkMutation.isPending
+                    manualMutation.isPending ||
+                    linkMutation.isPending ||
+                    apiMutation.isPending
                   }
                 />
               ))
@@ -657,7 +830,9 @@ function Row({
   onOpenDetail,
   onManualMark,
   onOpenAmazon,
+  onApiSend,
   onReopenPending,
+  spApiConfigured,
   busy,
 }: {
   item: RepeatOrderItem;
@@ -666,7 +841,9 @@ function Row({
   onOpenDetail: () => void;
   onManualMark: () => void;
   onOpenAmazon: () => void;
+  onApiSend: () => void;
   onReopenPending: () => void;
+  spApiConfigured: boolean;
   busy: boolean;
 }) {
   const actionsDisabled = !item.can_request_review || busy;
@@ -765,8 +942,13 @@ function Row({
           />
           <ActionIcon
             icon={<Send className="h-4 w-4" />}
-            label="API send — coming in Stage 6"
-            disabled
+            label={
+              spApiConfigured
+                ? "Send via Amazon SP-API"
+                : "Configure SP-API in Settings to use this method"
+            }
+            disabled={actionsDisabled || !spApiConfigured}
+            onClick={onApiSend}
           />
         </TooltipProvider>
         {!item.can_request_review ? (

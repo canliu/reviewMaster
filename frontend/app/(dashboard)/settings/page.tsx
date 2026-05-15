@@ -112,14 +112,14 @@ export default function SettingsPage() {
             <CardTitle>Active Shop</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {settings.available_shop_sites.length === 0 ? (
+            {(settings.available_scopes ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 Upload an Amazon order file to populate your shops, then come
                 back here to pick one.
               </p>
             ) : (
               <>
-                <Label htmlFor="shop-select">Selected shop</Label>
+                <Label htmlFor="shop-select">Selected scope</Label>
                 <Select
                   value={settings.active_shop_site ?? undefined}
                   onValueChange={(value) =>
@@ -130,20 +130,29 @@ export default function SettingsPage() {
                   }
                 >
                   <SelectTrigger id="shop-select" className="max-w-xs">
-                    <SelectValue placeholder="Pick a shop" />
+                    <SelectValue placeholder="Pick a shop or marketplace" />
                   </SelectTrigger>
                   <SelectContent>
-                    {settings.available_shop_sites.map((shop) => (
+                    {(settings.available_scopes ?? []).map((scope) => (
                       <SelectItem
-                        key={shop}
-                        value={shop}
-                        className="font-mono text-sm"
+                        key={scope.value}
+                        value={scope.value}
+                        className={
+                          scope.type === "marketplace"
+                            ? "text-sm font-medium"
+                            : "font-mono text-sm"
+                        }
                       >
-                        {shop}
+                        {scope.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  An <span className="font-medium">All shops · MARKET</span>{" "}
+                  scope pools your shops within the same marketplace — same
+                  buyer on two shops counts as a repeat.
+                </p>
               </>
             )}
           </CardContent>
@@ -252,6 +261,22 @@ export default function SettingsPage() {
                 handleMutate("Timezone", mutate({ timezone: tz }))
               }
             />
+          </CardContent>
+        </Card>
+
+        {/* ---- SP-API link ---- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>SP-API connection</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Connect your Amazon Selling Partner API credentials to send
+              review requests automatically (method: api).
+            </p>
+            <Button variant="outline" asChild>
+              <a href="/settings/sp-api">Manage SP-API credentials →</a>
+            </Button>
           </CardContent>
         </Card>
 

@@ -40,6 +40,45 @@ def _grain_column(grain: str) -> str:
     return {"asin": "asin", "spu": "spu", "product_name": "product_name"}[grain]
 
 
+# Virtual shop_site prefix that means "all of this user's shops in a given
+# marketplace" — e.g. `all:US` covers `p3:US` and `p4:US`.
+ALL_SCOPE_PREFIX = "all:"
+
+
+def _marketplace_of(shop_site: str) -> str | None:
+    """Return the marketplace token (after the rightmost `:`). `p3:US` → `US`."""
+    if not shop_site or ":" not in shop_site:
+        return None
+    return shop_site.rsplit(":", 1)[1].strip().upper() or None
+
+
+async def _resolve_shop_scope(
+    db: AsyncSession, user_id, scope: str
+) -> list[str]:
+    """Expand a scope string into a list of real shop_site values.
+
+    A real shop (`p3:US`) returns `["p3:US"]`. The virtual `all:US` returns
+    every shop_site the user has uploaded that's in the US marketplace.
+    """
+    from app.models.order import Order
+    from sqlalchemy import select
+
+    if scope.startswith(ALL_SCOPE_PREFIX):
+        market = scope[len(ALL_SCOPE_PREFIX):].strip().upper()
+        rows = (
+            await db.execute(
+                select(Order.shop_site)
+                .where(Order.user_id == user_id)
+                .where(Order.shop_site.is_not(None))
+                .distinct()
+            )
+        ).all()
+        return sorted(
+            {r[0] for r in rows if _marketplace_of(r[0]) == market}
+        )
+    return [scope]
+
+
 async def _load_settings(db: AsyncSession, user: User) -> UserSettings:
     row = await db.get(UserSettings, user.id)
     if row is None:
@@ -97,26 +136,38 @@ async def summary(db: AsyncSession, user: User) -> dict[str, int]:
     earliest_in_window = now - WINDOW_MAX
     latest_in_window = now - WINDOW_MIN
 
+    shops = await _resolve_shop_scope(db, user.id, settings.active_shop_site)
+    if not shops:
+        return {
+            "total_repeat_orders": 0,
+            "total_repeat_buyers": 0,
+            "total_repeat_products": 0,
+            "in_review_window": 0,
+            "already_requested": 0,
+        }
+
+    # repeat_groups SUMs across the resolved shops so cross-shop repeats
+    # within the same marketplace are counted as one repeat group.
     sql = text(
         f"""
         WITH repeat_groups AS (
-            SELECT shop_site, buyer_key, group_value
+            SELECT buyer_key, group_value, SUM(order_count) AS order_count
             FROM buyer_product_stats
             WHERE user_id = :uid
-              AND shop_site = :shop
+              AND shop_site = ANY(CAST(:shops AS text[]))
               AND grain = :grain
-              AND order_count >= :min_purchases
+            GROUP BY buyer_key, group_value
+            HAVING SUM(order_count) >= :min_purchases
         ),
         relevant AS (
             SELECT o.id, o.buyer_key, o.{grain_col} AS group_value,
                    o.estimated_delivery_utc
             FROM orders o
             INNER JOIN repeat_groups rg
-              ON rg.shop_site = o.shop_site
-             AND rg.buyer_key = o.buyer_key
+              ON rg.buyer_key = o.buyer_key
              AND rg.group_value = o.{grain_col}
             WHERE o.user_id = :uid
-              AND o.shop_site = :shop
+              AND o.shop_site = ANY(CAST(:shops AS text[]))
               AND (cardinality(CAST(:excluded AS text[])) = 0
                    OR o.order_type IS NULL
                    OR NOT (o.order_type = ANY(CAST(:excluded AS text[]))))
@@ -153,7 +204,7 @@ async def summary(db: AsyncSession, user: User) -> dict[str, int]:
             sql,
             {
                 "uid": user.id,
-                "shop": settings.active_shop_site,
+                "shops": shops,
                 "grain": grain,
                 "min_purchases": DEFAULT_MIN_PURCHASES,
                 "excluded": excluded,
@@ -174,6 +225,9 @@ async def summary(db: AsyncSession, user: User) -> dict[str, int]:
 
 # ---------- list ----------
 
+VALID_REQUEST_STATUSES = {"none", "pending", "sent", "failed"}
+
+
 async def list_orders(
     db: AsyncSession,
     user: User,
@@ -183,18 +237,38 @@ async def list_orders(
     asin: str | None = None,
     product_search: str | None = None,
     has_review_request: bool | None = None,
+    request_status: str | None = None,
     in_window: bool | None = None,
     min_purchases: int = DEFAULT_MIN_PURCHASES,
     sort: str = "last_order_desc",
+    shop_site_override: str | None = None,
+    shop_filter: str | None = None,
 ) -> dict[str, Any]:
+    """List repeat orders.
+
+    ``shop_site_override`` lets the caller (typically the CSV export)
+    pick a shop that isn't the active one. ``request_status`` is a
+    fine-grained filter — when set it overrides ``has_review_request`` and
+    accepts the literal strings ``none|pending|sent|failed``.
+    """
     if sort not in VALID_SORTS:
         raise APIError(422, "INVALID_SORT", f"sort must be one of {sorted(VALID_SORTS)}.")
     if page < 1 or page_size < 1 or page_size > 200:
         raise APIError(422, "INVALID_PAGINATION", "page>=1, 1<=page_size<=200.")
+    if request_status is not None and request_status not in VALID_REQUEST_STATUSES:
+        raise APIError(
+            422,
+            "INVALID_REQUEST_STATUS",
+            f"request_status must be one of {sorted(VALID_REQUEST_STATUSES)}.",
+        )
 
     settings = await _load_settings(db, user)
     empty = {"total": 0, "page": page, "page_size": page_size, "items": []}
-    if settings.active_shop_site is None:
+    scope = (shop_site_override or settings.active_shop_site or "").strip()
+    if not scope:
+        return empty
+    shops = await _resolve_shop_scope(db, user.id, scope)
+    if not shops:
         return empty
 
     grain = settings.repeat_grain
@@ -207,14 +281,17 @@ async def list_orders(
         "delivery_asc": "estimated_delivery_utc ASC NULLS LAST, id ASC",
     }[sort]
 
+    # repeat_groups SUMs counts across the resolved shop list, so cross-shop
+    # repeats within the same marketplace are detected.
     base_cte = f"""
         WITH repeat_groups AS (
-            SELECT shop_site, buyer_key, group_value, order_count
+            SELECT buyer_key, group_value, SUM(order_count) AS order_count
             FROM buyer_product_stats
             WHERE user_id = :uid
-              AND shop_site = :shop
+              AND shop_site = ANY(CAST(:shops AS text[]))
               AND grain = :grain
-              AND order_count >= :min_purchases
+            GROUP BY buyer_key, group_value
+            HAVING SUM(order_count) >= :min_purchases
         ),
         ordered AS (
             SELECT o.id, o.user_id, o.order_id, o.shop_site, o.asin, o.spu,
@@ -247,11 +324,10 @@ async def list_orders(
                    ) AS active_review
             FROM orders o
             INNER JOIN repeat_groups rg
-              ON rg.shop_site = o.shop_site
-             AND rg.buyer_key = o.buyer_key
+              ON rg.buyer_key = o.buyer_key
              AND rg.group_value = o.{grain_col}
             WHERE o.user_id = :uid
-              AND o.shop_site = :shop
+              AND o.shop_site = ANY(CAST(:shops AS text[]))
               AND (cardinality(CAST(:excluded AS text[])) = 0
                    OR o.order_type IS NULL
                    OR NOT (o.order_type = ANY(CAST(:excluded AS text[]))))
@@ -262,10 +338,26 @@ async def list_orders(
               AND (CAST(:product_search AS text) IS NULL
                    OR product_name ILIKE :search_like
                    OR product_title ILIKE :search_like)
+              -- shop_filter narrows the result rows to one specific shop
+              -- WITHOUT changing which orders count as repeats (the scope
+              -- already determined that). Useful when scope = all:US and the
+              -- user wants to focus on one shop's slice of the cross-shop pool.
+              AND (CAST(:shop_filter AS text) IS NULL OR shop_site = :shop_filter)
               AND (
                 CAST(:has_review_request AS boolean) IS NULL
                 OR (CAST(:has_review_request AS boolean) = TRUE AND any_review_exists)
                 OR (CAST(:has_review_request AS boolean) = FALSE AND NOT any_review_exists)
+              )
+              -- request_status: fine-grained — none means "no request row at all",
+              -- pending/sent/failed match the active_review's status when set.
+              AND (
+                CAST(:request_status AS text) IS NULL
+                OR (CAST(:request_status AS text) = 'none' AND NOT any_review_exists)
+                OR (CAST(:request_status AS text) IN ('pending', 'sent')
+                    AND active_review IS NOT NULL
+                    AND active_review->>'status' = CAST(:request_status AS text))
+                OR (CAST(:request_status AS text) = 'failed'
+                    AND any_review_exists AND active_review IS NULL)
               )
               AND (
                 CAST(:in_window AS boolean) IS NULL
@@ -294,7 +386,7 @@ async def list_orders(
     now = _now_utc()
     params = {
         "uid": user.id,
-        "shop": settings.active_shop_site,
+        "shops": shops,
         "grain": grain,
         "min_purchases": int(min_purchases),
         "excluded": excluded,
@@ -302,6 +394,8 @@ async def list_orders(
         "product_search": product_search,
         "search_like": f"%{product_search}%" if product_search else None,
         "has_review_request": has_review_request,
+        "request_status": request_status,
+        "shop_filter": shop_filter,
         "in_window": in_window,
         "earliest_in_window": now - WINDOW_MAX,
         "latest_in_window": now - WINDOW_MIN,
@@ -362,20 +456,27 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
     if settings.active_shop_site is None:
         return None
 
+    shops = await _resolve_shop_scope(db, user.id, settings.active_shop_site)
+    if not shops:
+        return None
+
     grain = settings.repeat_grain
     grain_col = _grain_column(grain)
     excluded = list(settings.excluded_order_types or [])
 
     # Reuse the same CTE shape, but filter to one order_uuid (no pagination).
+    # purchase_index counts across the scope's shops, so cross-shop repeats
+    # share a single sequence.
     sql = text(
         f"""
         WITH repeat_groups AS (
-            SELECT shop_site, buyer_key, group_value, order_count
+            SELECT buyer_key, group_value, SUM(order_count) AS order_count
             FROM buyer_product_stats
             WHERE user_id = :uid
-              AND shop_site = :shop
+              AND shop_site = ANY(CAST(:shops AS text[]))
               AND grain = :grain
-              AND order_count >= :min_purchases
+            GROUP BY buyer_key, group_value
+            HAVING SUM(order_count) >= :min_purchases
         )
         SELECT o.id, o.user_id, o.order_id, o.shop_site, o.asin, o.spu,
                o.product_name, o.product_title, o.order_type,
@@ -387,7 +488,7 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
                (
                  SELECT COUNT(*) FROM orders o2
                  WHERE o2.user_id = o.user_id
-                   AND o2.shop_site = o.shop_site
+                   AND o2.shop_site = ANY(CAST(:shops AS text[]))
                    AND o2.buyer_key = o.buyer_key
                    AND o2.{grain_col} = o.{grain_col}
                    AND COALESCE(o2.order_time_utc, '-infinity') <
@@ -412,12 +513,11 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
                ) AS active_review
         FROM orders o
         INNER JOIN repeat_groups rg
-          ON rg.shop_site = o.shop_site
-         AND rg.buyer_key = o.buyer_key
+          ON rg.buyer_key = o.buyer_key
          AND rg.group_value = o.{grain_col}
         WHERE o.id = :order_uuid
           AND o.user_id = :uid
-          AND o.shop_site = :shop
+          AND o.shop_site = ANY(CAST(:shops AS text[]))
           AND (cardinality(CAST(:excluded AS text[])) = 0
                OR o.order_type IS NULL
                OR NOT (o.order_type = ANY(CAST(:excluded AS text[]))))
@@ -428,7 +528,7 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
             sql,
             {
                 "uid": user.id,
-                "shop": settings.active_shop_site,
+                "shops": shops,
                 "grain": grain,
                 "min_purchases": DEFAULT_MIN_PURCHASES,
                 "excluded": excluded,
@@ -458,7 +558,7 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
                        ) AS review_request_status
                 FROM orders o
                 WHERE o.user_id = :uid
-                  AND o.shop_site = :shop
+                  AND o.shop_site = ANY(CAST(:shops AS text[]))
                   AND o.buyer_key = :buyer_key
                 ORDER BY o.order_time_utc DESC NULLS LAST, o.id DESC
                 LIMIT :cap
@@ -466,7 +566,7 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
             ),
             {
                 "uid": user.id,
-                "shop": item["shop_site"],
+                "shops": shops,
                 "buyer_key": item["buyer_key"],
                 "cap": history_cap + 1,
             },
@@ -479,11 +579,12 @@ async def detail(db: AsyncSession, user: User, order_uuid: UUID) -> dict[str, An
         await db.execute(
             text(
                 "SELECT COUNT(*) FROM orders WHERE user_id = :uid "
-                "AND shop_site = :shop AND buyer_key = :buyer_key"
+                "AND shop_site = ANY(CAST(:shops AS text[])) "
+                "AND buyer_key = :buyer_key"
             ),
             {
                 "uid": user.id,
-                "shop": item["shop_site"],
+                "shops": shops,
                 "buyer_key": item["buyer_key"],
             },
         )

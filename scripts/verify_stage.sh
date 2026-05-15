@@ -161,13 +161,15 @@ check_frontend_lint() {
 
 check_frontend_build() {
   # Run the prod build in a *throwaway* container, NOT in the live dev
-  # container. `compose run --rm` starts a fresh container with its own
-  # anonymous /app/.next and /app/node_modules (the latter is populated
-  # from the image's baked-in node_modules), and is removed on exit.
-  # This keeps the dev server's named `frontend-next` volume untouched so
-  # http://localhost:3300 stays serving fresh dev chunks throughout verify.
+  # container. `compose run --rm` would still reuse the SERVICE's named
+  # `frontend-next` volume by default — which is exactly what we want to
+  # protect. The `-v /app/.next` override mounts an empty anonymous volume
+  # over /app/.next for just this invocation, so prod build artifacts have
+  # nowhere to leak into. The dev server keeps serving its own .next
+  # uninterrupted.
   check "frontend builds" \
-    docker compose run --rm --no-deps -T frontend npm run build --silent
+    docker compose run --rm --no-deps -v /app/.next -T frontend \
+      npm run build --silent
 }
 
 check_alembic_up_to_date() {
@@ -572,7 +574,9 @@ verify_stage_6() {
     return
   fi
 
-  check_grep "GET /api/sp-api/credentials returns configured field" "configured" \
+  # Per-shop model: the credentials endpoint returns `{"items": [...]}`,
+  # each item carries a "configured" flag. Just confirm we get an items list.
+  check_grep "GET /api/sp-api/credentials returns items list" "items" \
     curl -sf -H "Authorization: Bearer $token" ${BACKEND_URL}/api/sp-api/credentials
 
   section "Worker for solicitations"

@@ -3,6 +3,13 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class ScopeEntry(BaseModel):
+    value: str
+    label: str
+    type: str  # "shop" | "marketplace"
+    marketplace: str | None = None
+
+
 class SettingsOut(BaseModel):
     active_shop_site: str | None
     repeat_grain: str
@@ -13,6 +20,9 @@ class SettingsOut(BaseModel):
     # the shop switcher and the excluded-types multi-select.
     available_shop_sites: list[str]
     available_order_types: list[str]
+    # Switcher entries: real shops + `all:<MARKET>` virtual scopes for any
+    # marketplace with 2+ shops.
+    available_scopes: list[ScopeEntry]
 
 
 class SettingsPatch(BaseModel):
