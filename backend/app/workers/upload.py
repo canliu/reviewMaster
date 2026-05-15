@@ -127,10 +127,30 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
         session.commit()
 
     counters = Counter()
-    seen_in_batch: set[str] = set()
     affected: set[tuple[str, str, str | None, str | None, str | None]] = set()
     progress = 0
     raw_columns = list(df.columns)
+
+    # The Excel column that carries order_id; used for cheap pre-filter
+    # before the expensive full parse runs.
+    order_id_excel_col = next(
+        (excel for excel, db in present_map.items() if db == "order_id"),
+        None,
+    )
+    if order_id_excel_col is None:
+        _mark_failed(batch_id, {"reason": "order_id column not present"})
+        return
+
+    # Pre-fetch every order_id the user already has. Re-uploads of the same
+    # Amazon export overlap heavily; checking membership in this set before
+    # parsing a row avoids 30+ lines of pandas / date / decimal / SHA-256 work
+    # per duplicate. One round-trip even at 100k+ orders (< 5MB on the wire).
+    with SyncSessionLocal() as session:
+        known_order_ids: set[str] = set(
+            session.scalars(
+                select(Order.order_id).where(Order.user_id == user_id)
+            ).all()
+        )
 
     for start in range(0, total_rows, CHUNK_SIZE):
         end = min(start + CHUNK_SIZE, total_rows)
@@ -138,21 +158,38 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
         chunk_rows: list[dict[str, Any]] = []
         chunk_affected: list[tuple[str, str, str | None, str | None, str | None]] = []
 
-        # Dedup map per chunk: collapse intra-chunk duplicates so the bulk
-        # INSERT sees each order_id at most once. With DO NOTHING semantics
-        # any survivor is fine — collisions are skipped regardless.
+        # Per-chunk new order_ids — collapses intra-chunk duplicates so the
+        # bulk INSERT sees each order_id at most once. First occurrence wins;
+        # the broader skip-duplicates policy means subsequent ones get
+        # discarded the same way DB-existing ones do.
         chunk_by_order: dict[str, dict[str, Any]] = {}
         for _idx, row in chunk.iterrows():
+            order_id_raw = row.get(order_id_excel_col)
+            if order_id_raw is None or (
+                isinstance(order_id_raw, float) and math.isnan(order_id_raw)
+            ):
+                counters["error_rows"] += 1
+                continue
+            order_id = str(order_id_raw).strip()
+            if not order_id:
+                counters["error_rows"] += 1
+                continue
+
+            if order_id in known_order_ids:
+                # Already in DB (or inserted by an earlier chunk this run).
+                counters["updated_rows"] += 1
+                continue
+            if order_id in chunk_by_order:
+                # Intra-chunk duplicate of a new row — first wins.
+                counters["duplicate_rows"] += 1
+                continue
+
             built = _build_order_record(row, user_id, present_map, raw_columns)
             if isinstance(built, str):  # error reason
                 counters["error_rows"] += 1
                 continue
 
-            order_id = built["order_id"]
-            if order_id in seen_in_batch:
-                counters["duplicate_rows"] += 1
-            seen_in_batch.add(order_id)
-            chunk_by_order[order_id] = built  # later overwrites earlier
+            chunk_by_order[order_id] = built
 
         chunk_rows = list(chunk_by_order.values())
         chunk_affected = [
@@ -168,21 +205,22 @@ def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
 
         if chunk_rows:
             with SyncSessionLocal() as session:
-                new_count, skipped_count, inserted_ids = _insert_new_chunk(
-                    session, user_id, chunk_rows
+                # Pre-filter already removed every row whose order_id is in
+                # the DB, so a plain INSERT would suffice; ON CONFLICT DO
+                # NOTHING is belt-and-suspenders for a concurrent upload
+                # that races in between our pre-fetch and this commit.
+                stmt = (
+                    pg_insert(Order)
+                    .values(chunk_rows)
+                    .on_conflict_do_nothing(index_elements=["user_id", "order_id"])
                 )
-                # `new_count` rows landed in DB; `skipped_count` rows were
-                # discarded because their order_id already existed for this
-                # user. Tracked under the legacy `updated_rows` field.
-                counters["new_rows"] += new_count
-                counters["updated_rows"] += skipped_count
+                session.execute(stmt)
                 session.commit()
-            # Stats refresh only needs to consider newly-inserted rows;
-            # skipped rows didn't change the (shop, buyer, group) tuple's
-            # state in DB.
-            for rec, ca in zip(chunk_rows, chunk_affected):
-                if rec["order_id"] in inserted_ids:
-                    affected.add(ca)
+            counters["new_rows"] += len(chunk_rows)
+            # Keep the pre-fetched set fresh so a later chunk treats these
+            # as duplicates rather than re-inserting.
+            known_order_ids.update(rec["order_id"] for rec in chunk_rows)
+            affected.update(chunk_affected)
 
         progress = end
         with SyncSessionLocal() as session:
@@ -343,50 +381,6 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts
-
-
-def _insert_new_chunk(
-    session: Session, user_id: UUID, rows: list[dict[str, Any]]
-) -> tuple[int, int, set[str]]:
-    """Bulk-insert new orders, skipping rows whose (user_id, order_id)
-    already exists in the database. Two round-trips per chunk:
-
-      1. SELECT to learn which order_ids already exist for this user.
-      2. One multi-row INSERT ... ON CONFLICT DO NOTHING for the survivors.
-
-    Returns ``(new_count, skipped_count, inserted_order_ids)``. The
-    DO NOTHING fallback is belt-and-suspenders for a concurrent upload
-    that raced in between the SELECT and the INSERT.
-
-    Skipped rows are NOT updated — Amazon's late corrections to old
-    orders will not propagate. Delete the affected orders if you need
-    to re-ingest them.
-    """
-    if not rows:
-        return 0, 0, set()
-
-    order_ids = [r["order_id"] for r in rows]
-    existing = set(
-        session.scalars(
-            select(Order.order_id)
-            .where(Order.user_id == user_id)
-            .where(Order.order_id.in_(order_ids))
-        ).all()
-    )
-
-    new_rows = [r for r in rows if r["order_id"] not in existing]
-    skipped_count = len(rows) - len(new_rows)
-
-    if new_rows:
-        stmt = (
-            pg_insert(Order)
-            .values(new_rows)
-            .on_conflict_do_nothing(index_elements=["user_id", "order_id"])
-        )
-        session.execute(stmt)
-
-    inserted_ids = {r["order_id"] for r in new_rows}
-    return len(new_rows), skipped_count, inserted_ids
 
 
 def _modal_shop(session: Session, user_id: UUID) -> str | None:
