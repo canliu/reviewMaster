@@ -100,7 +100,12 @@ def process_upload(batch_id: str, user_id: str, file_path: str) -> None:
 
 def _do_process(batch_id: UUID, user_id: UUID, file_path: str) -> None:
     try:
-        df = pd.read_excel(file_path, sheet_name=SHEET_NAME, dtype=object)
+        # `calamine` is a Rust-based xlsx reader, 5–10× faster than openpyxl
+        # on large files; openpyxl stays in pyproject as a runtime dep for
+        # the writer side (test fixture generators use it).
+        df = pd.read_excel(
+            file_path, sheet_name=SHEET_NAME, dtype=object, engine="calamine"
+        )
     except Exception as exc:  # noqa: BLE001
         _mark_failed(batch_id, {"reason": f"failed to read xlsx: {exc}"})
         return
